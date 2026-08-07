@@ -168,6 +168,7 @@ body::before{
 .stage-explain{font-size:11.5px;color:var(--txt2);margin-top:8px;padding-left:2px}
 .stage-explain b{color:var(--txt1);font-weight:600}
 .stage.stage-active .stage-explain{color:var(--txt1)}
+.output-panel.stage-active{border-color:var(--amber-dim);box-shadow:0 0 22px rgba(255,180,84,.12)}
 .connector{
   display:flex;align-items:center;gap:8px;justify-content:center;
   font-family:var(--font-mono);font-size:10px;color:var(--txt2);padding:6px 0;letter-spacing:1px;
@@ -572,7 +573,7 @@ function drawRF() {
   const px = c0 * 10, py = r0 * 10, pw = (c1 - c0 + 1) * 10, ph = (r1 - r0 + 1) * 10;
   padCtx.fillStyle = "rgba(255,180,84,0.16)";
   padCtx.fillRect(px, py, pw, ph);
-  padCtx.strokeStyle = "var(--amber)";
+  padCtx.strokeStyle = "#ffb454";
   padCtx.lineWidth = 2;
   padCtx.strokeRect(px + 1, py + 1, pw - 2, ph - 2);
   const cx = (c0 + c1) / 2 * 10 + 5, cy = (r0 + r1) / 2 * 10 + 5;
@@ -715,9 +716,9 @@ function showInspector(st, filter, thumbEl) {
   inspCtx.putImageData(base, 0, 0);
   inspCanvas.style.width = "224px"; inspCanvas.style.height = "224px";
   inspReadout.textContent = "悬停查看激活值";
-  // 定位：靠近画板右侧，跟随鼠标 y
+  // 定位：靠近画板右侧，跟随鼠标 y；右缘在视口内钳制
   const pr = thumbEl.getBoundingClientRect();
-  inspector.style.left = (pr.right + 14) + "px";
+  inspector.style.left = Math.min(pr.right + 14, window.innerWidth - 250) + "px";
   inspector.style.top = Math.max(8, pr.top - 20) + "px";
   inspector.classList.add("show");
 }
