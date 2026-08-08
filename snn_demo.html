@@ -419,7 +419,6 @@ const spikeList = [];
 const fireHist = new Int16Array(T).fill(-1);   // winner at each step of current sample
 const vAll = new Float32Array(N * T);          // membrane potential history (inference)
 const thAll = new Float32Array(N * T);
-const encBuf = new Float32Array(NIN);
 let preCount = new Float32Array(NIN);          // per-input-pixel spike count (current sample)
 let flash = new Float32Array(NIN * N);         // ΔW highlight intensity, decays per frame
 let fireT = -1, fireV = 0, fireTheta = THETA0; // snapshot of the last firing event
@@ -434,7 +433,7 @@ function resetWeights() {
     for (let i = 0; i < NIN; i++) W[i * N + j] *= c;
   }
   V.fill(0); theta.fill(THETA0); refr.fill(0); rate.fill(0);
-  digCount.fill(0); pref.fill(0); spikeAccum.fill(0); encBuf.fill(0);
+  digCount.fill(0); pref.fill(0); spikeAccum.fill(0);
   preCount.fill(0); flash.fill(0);
   fireT = -1; fireV = 0; fireTheta = THETA0; lastLTP = 0; lastNorm = 1;
   lastPre.fill(-1); trained = 0; lastFire = -1; cur = null;
@@ -475,7 +474,6 @@ function simStep() {
   for (let k = 0; k < spikeList.length; k++) {
     const i = spikeList[k];
     lastPre[i] = t;
-    encBuf[i] = 1;
     preCount[i]++;
     const base = i * N;
     for (let j = 0; j < N; j++) if (refr[j] <= 0) V[j] += W[base + j];
@@ -572,7 +570,8 @@ function setInputLabel(s) {
   document.getElementById("inputLabel").textContent = "数字 " + s.label;
 }
 function renderStep() {
-  renderInput(); renderEnc(); renderLif(); renderRaster(); renderVolt();
+  renderInput(); renderCalc();
+  decayFlash(); renderDw();
 }
 function renderInput() {
   const cv = document.getElementById("canvasIn");
@@ -585,110 +584,6 @@ function renderInput() {
     im.data[o] = im.data[o + 1] = im.data[o + 2] = v; im.data[o + 3] = 255;
   }
   ctx.putImageData(im, 0, 0);
-}
-function renderEnc() {
-  const cv = document.getElementById("canvasEnc");
-  const ctx = cv.getContext("2d");
-  const im = ctx.createImageData(28, 28);
-  for (let i = 0; i < 784; i++) {
-    const a = encBuf[i];
-    const o = i * 4;
-    im.data[o] = 255 * a * 0.95;
-    im.data[o + 1] = 185 * a;
-    im.data[o + 2] = 70 * a;
-    im.data[o + 3] = 255;
-    encBuf[i] *= 0.78;
-  }
-  ctx.putImageData(im, 0, 0);
-}
-function renderLif() {
-  const cv = document.getElementById("canvasLif");
-  const ctx = cv.getContext("2d");
-  const w = cv.width, h = cv.height;
-  ctx.clearRect(0, 0, w, h);
-  const bw = 4, gap = 0.2;
-  const x0 = 2, yBase = h - 18;
-  ctx.fillStyle = "#20293D";
-  ctx.fillRect(x0, yBase - 1, w - 4, 1);           // baseline
-  for (let j = 0; j < N; j++) {
-    const x = x0 + j * bw;
-    const nv = Math.min(1, V[j] / theta[j]);
-    const bh = nv * (yBase - 4);
-    if (t > 0 && fireHist[t - 1] === j) {
-      ctx.fillStyle = "#FFB454";                    // just fired an action potential
-      ctx.shadowColor = "rgba(255,180,84,.85)"; ctx.shadowBlur = 7;
-      ctx.fillRect(x, yBase * 0.14, bw - 0.4, yBase * 0.86);
-      ctx.shadowBlur = 0;
-    } else if (refr[j] > 0) {
-      ctx.fillStyle = "rgba(255,92,122,.4)";         // suppressed / refractory
-      ctx.fillRect(x, yBase - 2, bw - 0.4, 2);
-    } else if (V[j] > 0) {
-      ctx.fillStyle = "#4CC9F0";
-      ctx.fillRect(x, yBase - bh, bw - 0.4, Math.max(1, bh));
-    } else {
-      ctx.fillStyle = "#1C2540";
-      ctx.fillRect(x, yBase - 1, bw - 0.4, 1);
-    }
-  }
-}
-function renderRaster() {
-  const cv = document.getElementById("canvasRaster");
-  const ctx = cv.getContext("2d");
-  const w = cv.width, hgt = cv.height;
-  ctx.clearRect(0, 0, w, hgt);
-  // frame
-  ctx.strokeStyle = "#1C2540"; ctx.lineWidth = 1;
-  ctx.strokeRect(0.5, 0.5, w - 1, hgt - 1);
-  // faint gridlines every 10 neurons
-  ctx.strokeStyle = "#141B2A";
-  for (let row = 0; row <= 10; row++) {
-    const y = row / 10 * hgt;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-  }
-  const xScale = w / T;
-  for (let tt = 0; tt < t; tt++) {
-    const j = fireHist[tt];
-    if (j < 0) continue;
-    const x = (tt + 0.5) * xScale;
-    const y = (j + 0.5) / N * hgt;
-    ctx.fillStyle = "#FFB454";
-    ctx.fillRect(x - 1, y - 1, 2.5, 2.5);
-  }
-}
-function renderVolt() {
-  const cv = document.getElementById("canvasVolt");
-  const ctx = cv.getContext("2d");
-  const w = cv.width, h = cv.height;
-  ctx.clearRect(0, 0, w, h);
-  ctx.strokeStyle = "#1C2540"; ctx.lineWidth = 1;
-  ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
-  const j = lastFire >= 0 ? lastFire : 0;
-  document.getElementById("voltNeuron").textContent = "#" + j;
-  const xScale = w / T;
-  const vMax = 1.35;
-  const yTh = h - 6 - (1 / vMax) * (h - 14);         // y where V/theta == 1
-  // threshold line
-  ctx.strokeStyle = "rgba(255,92,122,.55)"; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
-  ctx.beginPath(); ctx.moveTo(0, yTh); ctx.lineTo(w, yTh); ctx.stroke();
-  ctx.setLineDash([]);
-  // voltage curve
-  ctx.beginPath();
-  for (let tt = 0; tt < t; tt++) {
-    const nv = Math.min(vMax, vAll[j * T + tt] / theta[j]);
-    const x = (tt + 0.5) * xScale;
-    const y = h - 6 - (nv / vMax) * (h - 14);
-    if (tt === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.strokeStyle = "#4CC9F0"; ctx.lineWidth = 1.6;
-  ctx.stroke();
-  // fire markers
-  for (let tt = 0; tt < t; tt++) {
-    if (fireHist[tt] === j) {
-      const x = (tt + 0.5) * xScale;
-      ctx.fillStyle = "#FFB454";
-      ctx.beginPath(); ctx.arc(x, yTh, 2.2, 0, Math.PI * 2); ctx.fill();
-    }
-  }
 }
 
 let gridTint = new Uint8ClampedArray(336 * 336 * 4);
@@ -870,8 +765,9 @@ function renderStage4() {
     main.style.color = "";
     sub.innerHTML = trained >= TRAIN.length
       ? "已看完全部样本 —— 到「推理」模式看它认数字"
-      : "正在用 STDP 学习… 观察上方权重如何自组织";
+      : "正在用 STDP 学习… 观察下方权重如何自组织";
     renderProb(null);
+    renderCalc(); renderDw();
     return;
   }
   if (trained === 0) {
@@ -879,12 +775,14 @@ function renderStage4() {
     main.style.color = "";
     sub.innerHTML = "还没学习。先切到 <b>学习</b> 模式播放一轮，再回来推理";
     renderProb(null);
+    renderCalc(); renderDw();
     return;
   }
   const win = argmax(spikeAccum, N);
   main.textContent = "数字 " + pref[win];
   sub.innerHTML = "放电最多的神经元 <b>#" + win + "</b>，它偏爱数字 <b>" + pref[win] + "</b>（本图放电 " + Math.round(spikeAccum[win]) + " 次）";
   renderProb(computeProb());
+  renderCalc(); renderDw();
 }
 
 // ---------- controls ----------
@@ -925,9 +823,9 @@ document.getElementById("btnReset").addEventListener("click", () => {
   running = false; setPlay();
   resetWeights();
   renderGrid(); renderCounts(); renderStage4();
-  ["canvasIn", "canvasEnc", "canvasLif", "canvasRaster", "canvasVolt"].forEach(id => {
+  ["canvasIn", "canvasProb", "calcSpark"].forEach(id => {
     const cv = document.getElementById(id);
-    cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
+    if (cv) cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
   });
 });
 
