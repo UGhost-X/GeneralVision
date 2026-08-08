@@ -58,24 +58,29 @@ def tournament_select(fitness: list[float], survivors: list[int], n_breeders: in
     return breeders
 
 
-def evolve(cfg: EvolutionConfig) -> dict:
+def evolve(cfg: EvolutionConfig, pop: list[Genome] | None = None,
+           history: list[dict] | None = None, start_gen: int = 0) -> dict:
     t_start = time.time()
-    rng = np.random.default_rng(cfg.seed)
     device = torch.device(cfg.device)
 
     train_img, train_lbl, _, _ = load_mnist()
     pool, val = split_pools(train_img, train_lbl, val_size=cfg.val_size, seed=cfg.seed)
     (tr_img, tr_lbl), (val_img, val_lbl) = pool, val
 
-    pop = init_population(cfg, rng)
+    if pop is None:
+        pop = init_population(cfg, np.random.default_rng(cfg.seed))
+    history = history or []
     sched = MutationSchedule(g_max=cfg.g_max)
-    history: list[dict] = []
-    best_fitness = float("-inf")
+    best_fitness = history[-1]["best_fitness"] if history else float("-inf")
     no_improve = 0
     os.makedirs(cfg.checkpoint_dir, exist_ok=True)
     log_f = open(os.path.join(cfg.checkpoint_dir, LOG_FILE), "a") if cfg.checkpoint_dir else None
+    if history and log_f:
+        # 续跑时历史从上一段 log 已存在，这里追加新记录即可
+        pass
 
-    for gen in range(cfg.g_max):
+    for gen in range(start_gen, cfg.g_max):
+        gen_rng = np.random.default_rng(cfg.seed * 100_000 + gen)   # 确定性：可断点续跑
         t_gen = time.time()
         results = []
         for i, g in enumerate(pop):
@@ -138,13 +143,13 @@ def evolve(cfg: EvolutionConfig) -> dict:
         n_children = n_elim
         survivors = list(range(N - n_elim))          # 顶部幸存（含精英）
         breeders = tournament_select(fits, survivors, n_children,
-                                     cfg.tournament_size, cfg.roulette_frac, rng)
+                                     cfg.tournament_size, cfg.roulette_frac, gen_rng)
 
         next_pop: list[Genome] = []
         for idx in survivors:                        # 幸存者原样进入下一代
             next_pop.append(results[idx][2])
         for b in breeders:                           # 繁殖者各分裂 1 子代填补淘汰
-            child = mutate(results[b][2], gen, rng, sched)
+            child = mutate(results[b][2], gen, gen_rng, sched)
             child.name = f"{results[b][2].name}#g{gen}"
             next_pop.append(child)
         pop = next_pop[:N]
@@ -186,8 +191,8 @@ def _save_checkpoint(cfg: EvolutionConfig, gen: int, pop: list[Genome],
     print(f"  检查点已保存: {path}")
 
 
-def _resume(cfg: EvolutionConfig, checkpoint_dir: str) -> dict:
-    """从检查点目录的最后一代恢复。"""
+def _resume(cfg: EvolutionConfig, checkpoint_dir: str) -> tuple[list[Genome], list[dict], int]:
+    """从检查点目录的最后一代恢复，返回 (pop, history, start_gen)。"""
     files = sorted(f for f in os.listdir(checkpoint_dir) if f.startswith("gen_") and f.endswith(".json"))
     if not files:
         raise FileNotFoundError(f"检查点目录 {checkpoint_dir} 无 gen_*.json")
@@ -195,9 +200,10 @@ def _resume(cfg: EvolutionConfig, checkpoint_dir: str) -> dict:
     with open(last, encoding="utf-8") as f:
         data = json.load(f)
     pop = [Genome.from_dict(d) for d in data["population"]]
-    print(f"从 {last} 恢复，gen={data['gen']}，种群 {len(pop)} 个体")
-    # TODO: 恢复后续续跑（当前先实现保存，恢复续跑留作后续）
-    return {"resumed_from": last, "gen": data["gen"], "population": pop}
+    history = data["history"]
+    start_gen = data["gen"] + 1
+    print(f"从 {last} 恢复：gen={data['gen']}，种群 {len(pop)} 个体，续跑从 gen {start_gen} 开始")
+    return pop, history, start_gen
 
 
 def main() -> None:
@@ -220,7 +226,8 @@ def main() -> None:
         cfg = cfg.smoke()
 
     if args.resume:
-        _resume(cfg, args.resume)
+        pop, history, start_gen = _resume(cfg, args.resume)
+        evolve(cfg, pop=pop, history=history, start_gen=start_gen)
         return
     evolve(cfg)
 
