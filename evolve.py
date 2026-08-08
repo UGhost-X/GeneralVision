@@ -98,7 +98,7 @@ def evolve(cfg: EvolutionConfig, pop: list[Genome] | None = None,
             results.append((float(np.mean(fit_scores)), best_metrics_rep, g))
             if cfg.log_every and gen % cfg.log_every == 0:
                 print(f"  ind {i}: fit={np.mean(fit_scores):.3f} "
-                      f"acc={best_metrics_rep['accuracy']:.3f} {g.describe()}")
+                      f"acc={best_metrics_rep['accuracy']:.3f} {g.describe()}", flush=True)
 
         results.sort(key=lambda r: r[0], reverse=True)
         fits = [r[0] for r in results]
@@ -135,7 +135,7 @@ def evolve(cfg: EvolutionConfig, pop: list[Genome] | None = None,
         print(f"[gen {gen}] best={best_f:.3f} (acc={best_m['accuracy']:.3f}, "
               f"sparse={best_m['sparsity']:.3f}, neurons={best_m['neurons']}, "
               f"layers={best_m['layers']}) | med={med_f:.3f} worst={worst_f:.3f} "
-              f"| {best_g.describe()}")
+              f"| {best_g.describe()}", flush=True)
 
         # ---- 选择与繁殖 ----
         N = len(pop)
