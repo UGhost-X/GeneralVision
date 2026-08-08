@@ -120,7 +120,8 @@ class LIFLayer:
             self.rate.mul_(1.0 - cfg.rate_alpha)
             if winner >= 0:
                 self.rate[winner] += cfg.rate_alpha
-            self.theta.add_(cfg.beta * cfg.rate_alpha, self.rate - self.rate.mean())
+            self.theta.add_(self.rate - self.rate.mean(),
+                            alpha=cfg.beta * cfg.rate_alpha)
             if cfg.theta_clamp is not None:
                 self.theta.clamp_(cfg.theta_clamp[0], cfg.theta_clamp[1])
 
