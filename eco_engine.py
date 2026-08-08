@@ -11,10 +11,13 @@ import numpy as np
 from dataclasses import dataclass
 
 # ---- 游戏与网络参数（阈值于 Task 2 校准并验证：默认值经 200 样本 MNIST 实测，
-#       隐藏层每场总发放均值≈99、产出 None 率 13.5%、10 通道全用，无需调参） ----
+#       隐藏层每场总发放均值≈99、产出 None 率 13.5%、10 通道全用，无需调参。
+#       Task 4 冒烟调参：60 种群满日实测约 12.4s >> 6s 上限，为让网页端逐日推进可接受，
+#       故 FOOD_COUNT 50→30、T 200→150（省 55% 算量）实测单日仍约 6.4s>6s，
+#       再压 T→120，实测约 4.9s 达标（<5s）；T 缩短只稀疏化发放、不改变阈值标定关系） ----
 POP_CAP = 60
-FOOD_COUNT = 50
-T = 200
+FOOD_COUNT = 30
+T = 120
 SPIKE_GAIN = 0.6
 LEAK = 0.94
 HIDDEN_SIZE = 100
