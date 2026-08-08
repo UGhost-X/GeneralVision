@@ -423,7 +423,11 @@
         <div class="verdict-main" id="verdictMain">—</div>
         <div class="verdict-sub" id="verdictSub">请先按 ▶ 播放，或切到「学习」</div>
       </div>
-      <p class="stage-cap">整张图看完后，<b>放电最多的那个神经元</b>就是网络的"答案"——它专门为某个数字放电。</p>
+      <div class="canvas-host">
+        <canvas id="canvasProb" width="360" height="110" class="line" role="img"
+                aria-label="0到9数字的分类概率柱状图"></canvas>
+      </div>
+      <p class="stage-cap">整张图看完后，<b>放电最多的那个神经元</b>就是网络的"答案"；下方是 0–9 每个数字的放电占比（概率）。</p>
     </div>
   </div>
 
@@ -875,6 +879,38 @@ function renderCounts() {
   document.getElementById("learnCount").textContent = trained;
   document.getElementById("progBar").style.width = (trained / TRAIN.length * 100).toFixed(1) + "%";
 }
+// ---------- probability output ----------
+function computeProb() {
+  const counts = new Array(10).fill(0);
+  let total = 0;
+  for (let j = 0; j < N; j++) { counts[pref[j]] += spikeAccum[j]; total += spikeAccum[j]; }
+  return total > 0 ? counts.map(c => c / total) : null;
+}
+
+function renderProb(prob) {
+  const cv = document.getElementById("canvasProb");
+  if (!cv) return;
+  const ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!prob) return;
+  const padL = 24, padR = 6, rowH = H / 10;
+  let maxD = 0;
+  for (let d = 1; d < 10; d++) if (prob[d] > prob[maxD]) maxD = d;
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  for (let d = 0; d < 10; d++) {
+    const y = d * rowH;
+    ctx.fillStyle = "#8B94A8";
+    ctx.fillText(String(d), padL - 8, y + rowH * 0.5);
+    const bw = Math.max(2, prob[d] * (W - padL - padR));
+    ctx.fillStyle = d === maxD ? "#FFB454" : "#4CC9F0";
+    ctx.globalAlpha = d === maxD ? 1 : 0.5;
+    ctx.fillRect(padL, y + rowH * 0.16, bw, rowH * 0.68);
+    ctx.globalAlpha = 1;
+  }
+}
 function renderStage4() {
   const main = document.getElementById("verdictMain");
   const sub = document.getElementById("verdictSub");
@@ -884,17 +920,20 @@ function renderStage4() {
     sub.innerHTML = trained >= TRAIN.length
       ? "已看完全部样本 —— 到「推理」模式看它认数字"
       : "正在用 STDP 学习… 观察上方权重如何自组织";
+    renderProb(null);
     return;
   }
   if (trained === 0) {
     main.textContent = "?";
     main.style.color = "";
     sub.innerHTML = "还没学习。先切到 <b>学习</b> 模式播放一轮，再回来推理";
+    renderProb(null);
     return;
   }
   const win = argmax(spikeAccum, N);
   main.textContent = "数字 " + pref[win];
   sub.innerHTML = "放电最多的神经元 <b>#" + win + "</b>，它偏爱数字 <b>" + pref[win] + "</b>（本图放电 " + Math.round(spikeAccum[win]) + " 次）";
+  renderProb(computeProb());
 }
 
 // ---------- controls ----------
