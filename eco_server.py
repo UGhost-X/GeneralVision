@@ -88,7 +88,9 @@ class EcoHandler(BaseHTTPRequestHandler):
                 except StopIteration:
                     self._json({"error": f"no organism named {name}"}, 404)
         elif self.path == "/api/config":
-            body = self._read_body() or {}
+            body = self._read_body()
+            if body is None:
+                return
             with self.lock:
                 cfg = self.engine.set_config(**body)
             self._json({"config": cfg})
