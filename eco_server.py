@@ -28,15 +28,20 @@ class EcoHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _read_body(self) -> dict:
-        n = int(self.headers.get("Content-Length", 0))
-        return json.loads(self.rfile.read(n) or b"{}")
+    def _read_body(self) -> dict | None:
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+            return json.loads(self.rfile.read(n) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            self._json({"error": "请求体不是合法 JSON"}, 400)
+            return None
 
     def do_GET(self):
         p = self.path
         if p in ("/", "/index.html"):
             try:
-                data = open(HTML, "rb").read()
+                with open(HTML, "rb") as f:
+                    data = f.read()
             except FileNotFoundError:
                 self._json({"error": "eco_game.html 不存在"}, 500); return
             self.send_response(200)
@@ -48,9 +53,15 @@ class EcoHandler(BaseHTTPRequestHandler):
             with self.lock:
                 self._json(self.engine.get_state())
         elif p.startswith("/api/digit_image/"):
-            idx = int(p.rsplit("/", 1)[1])
-            with self.lock:
-                self._json(self.engine.get_digit_image(idx))
+            try:
+                idx = int(p.rsplit("/", 1)[1])
+            except (ValueError, IndexError):
+                self._json({"error": "无效的数字图像索引"}, 400); return
+            try:
+                with self.lock:
+                    self._json(self.engine.get_digit_image(idx))
+            except IndexError:
+                self._json({"error": "数字图像索引越界"}, 400)
         else:
             self._json({"error": "not found"}, 404)
 
@@ -61,7 +72,14 @@ class EcoHandler(BaseHTTPRequestHandler):
             self._json({"day": stats["day"], "events": events, "stats": stats})
         elif self.path == "/api/manual_feed":
             body = self._read_body()
-            digit = int(body.get("digit", 0))
+            if body is None:
+                return
+            try:
+                digit = int(body.get("digit", 0))
+            except (ValueError, TypeError):
+                self._json({"error": "digit 必须是 0-9 的整数"}, 400); return
+            if not (0 <= digit <= 9):
+                self._json({"error": f"digit {digit} 超出 0-9 范围"}, 400); return
             with self.lock:
                 st = self.engine.get_state()
                 name = body.get("name") or st["stats"]["best_name"]

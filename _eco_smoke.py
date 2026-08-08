@@ -13,7 +13,6 @@ def main():
         events, stats = eco_.step_day()
         dt = time.time() - t
         names = sorted(set(g.name for g in eco_.pop))
-        gens = np.array([g.born_gen for g in eco_.pop])
         ages = np.array([g.age for g in eco_.pop])
         print(f"day {stats['day']:>3} | alive={stats['alive']:>3} "
               f"avg={stats['avg_acc']:.3f} best={stats['best_acc']:.3f} "

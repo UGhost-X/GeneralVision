@@ -14,7 +14,7 @@ from dataclasses import dataclass
 #       隐藏层每场总发放均值≈99、产出 None 率 13.5%、10 通道全用，无需调参。
 #       Task 4 冒烟调参：60 种群满日实测约 12.4s >> 6s 上限，为让网页端逐日推进可接受，
 #       故 FOOD_COUNT 50→30、T 200→150（省 55% 算量）实测单日仍约 6.4s>6s，
-#       再压 T→120，实测约 4.9s 达标（<5s）；T 缩短只稀疏化发放、不改变阈值标定关系） ----
+#       再压 T→120，实测均值约 5.0s、全部单日 <6s；T 缩短只稀疏化发放、不改变阈值标定关系） ----
 POP_CAP = 60
 FOOD_COUNT = 30
 T = 120
@@ -94,7 +94,8 @@ def forward(genome: Genome, pixels: np.ndarray, rng: np.random.Generator
     逐样本重置 V/refr，与 snn.py step() 语义一致。
     """
     B = pixels.shape[0]
-    S = (rng.random((B, 784, T)) < (pixels[:, :, None] * SPIKE_GAIN)).astype(np.float32)
+    # 直接用 float32 生成泊松随机发放，避免 float64 中间数组的双倍内存分配
+    S = (rng.random((B, 784, T), dtype=np.float32) < (pixels[:, :, None] * SPIKE_GAIN)).astype(np.float32)
     Vh = np.zeros((B, HIDDEN_SIZE), np.float32)
     refh = np.zeros((B, HIDDEN_SIZE), np.int32)
     Vr = np.zeros((B, READOUT_SIZE), np.float32)
@@ -215,18 +216,32 @@ class Ecosystem:
                 events.append({"type": "birth", "name": child.name,
                                "parents": [child.parents[0], child.parents[1]],
                                "gen": child.born_gen})
-        self.pop = survivors
+        if not survivors:
+            # 全员灭绝（bottom ∪ aged 清空）：生态重启，再播一代全新初始个体
+            self.pop = [random_genome(f"eco#{self.counter + i}", self.rng)
+                        for i in range(INIT_POP)]
+            self.counter += INIT_POP
+            for g in self.pop:
+                events.append({"type": "birth", "name": g.name,
+                               "parents": None, "gen": g.born_gen})
+        else:
+            self.pop = survivors
 
-        acc_arr = np.array([accs.get(g.name, 0.0) for g in self.pop], np.float64)
-        stats = {
-            "day": self.day,
-            "alive": len(self.pop),
-            "avg_acc": round(float(acc_arr.mean()), 4),
-            "best_acc": round(float(acc_arr.max()), 4),
-            "best_name": self.pop[int(acc_arr.argmax())].name,
-            "median_acc": round(float(np.median(acc_arr)), 4),
-            "worst_acc": round(float(acc_arr.min()), 4),
-        }
+        # 统计（与 _last_stats 一致：空种群时产出全零统计，避免 argmax 崩溃）
+        if not self.pop:
+            stats = {"day": self.day, "alive": 0, "avg_acc": 0.0, "best_acc": 0.0,
+                     "best_name": "", "median_acc": 0.0, "worst_acc": 0.0}
+        else:
+            acc_arr = np.array([accs.get(g.name, 0.0) for g in self.pop], np.float64)
+            stats = {
+                "day": self.day,
+                "alive": len(self.pop),
+                "avg_acc": round(float(acc_arr.mean()), 4),
+                "best_acc": round(float(acc_arr.max()), 4),
+                "best_name": self.pop[int(acc_arr.argmax())].name,
+                "median_acc": round(float(np.median(acc_arr)), 4),
+                "worst_acc": round(float(acc_arr.min()), 4),
+            }
         events.append({"type": "day_end", "stats": stats})
         self.day += 1
         return events, stats

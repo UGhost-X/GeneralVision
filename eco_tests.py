@@ -36,12 +36,16 @@ def test_mutation_is_rare():
     assert both_far < 0.05, both_far
 
 def test_genome_serialize():
+    import json
     g = eco.random_genome("s", np.random.default_rng(3))
     d = {"name": g.name, "hidden": g.hidden.tolist(), "readout": g.readout.tolist(),
          "born_gen": g.born_gen, "age": g.age}
-    import json
     s = json.dumps(d)
-    assert "hidden" in s and "readout" in s
+    d2 = json.loads(s)
+    assert d2["name"] == g.name
+    assert d2["born_gen"] == g.born_gen and d2["age"] == g.age
+    assert np.array_equal(np.array(d2["hidden"], g.hidden.dtype), g.hidden), "hidden 数组应往返一致"
+    assert np.array_equal(np.array(d2["readout"], g.readout.dtype), g.readout), "readout 数组应往返一致"
 
 def test_forward_shapes_and_deterministic():
     rng = np.random.default_rng(5)
@@ -111,7 +115,7 @@ def test_server_endpoints():
     注：run_server_in_thread 返回 (port, server)（ThreadingHTTPServer），其关闭方式
     为 server.shutdown() + server.server_close()（无 join 方法）。
     """
-    import threading, json, urllib.request
+    import json, urllib.request
     from eco_server import run_server_in_thread, PORT_DEFAULT
     port, server = run_server_in_thread(seed=0)
     base = f"http://127.0.0.1:{port}"
