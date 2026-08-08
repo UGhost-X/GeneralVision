@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+.venv/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Data (downloadable / regenerable)
+data/
