@@ -8,6 +8,8 @@ __pycache__/
 
 # Claude Code local settings
 .claude/settings.local.json
+.claude/settings.json
+.claude/scheduled_tasks.lock
 
 # Data (downloadable / regenerable)
 data/

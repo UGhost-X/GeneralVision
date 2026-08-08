@@ -61,6 +61,7 @@ def _train_layer(tr_x: np.ndarray, tr_y: np.ndarray, variant: str,
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--train", type=int, default=2000)
+    ap.add_argument("--calibrate", type=int, default=2000)
     ap.add_argument("--variant", choices=["baseline", "classic"], default="baseline")
     ap.add_argument("--no-export", action="store_true")   # 只评估，不写文件
     args = ap.parse_args()
@@ -74,7 +75,7 @@ def main() -> None:
     tr_x = train_img[idx[: args.train]]
     tr_y = train_lbl[idx[: args.train]]
 
-    net = _train_layer(tr_x, tr_y, args.variant, device)
+    net = _train_layer(tr_x, tr_y, args.variant, device, cal_n=args.calibrate)
     layer = net.layers[0]
 
     # 评估 group-by-pref 读出（演示页用的就是这种读出）
