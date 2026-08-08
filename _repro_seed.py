@@ -17,4 +17,4 @@ for ts in (150, 400):
     g.train_samples = ts
     fit, m = evaluate(g, tr_img, tr_lbl, val_img, val_lbl, device)
     print(f"seed train_samples={ts}: fit={fit:.3f} acc={m['accuracy']:.3f} "
-          f"sparse={m['sparsity']:.3f} div={m['pref_diversity']}")
+          f"sparse={m['sparsity']:.3f}")
