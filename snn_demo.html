@@ -290,26 +290,21 @@
   }
   .note code { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); }
 
-  /* ---------- step walkthrough ---------- */
-  .walk-panel {
+  /* ---------- pixel→probability flow ---------- */
+  .flow-panel {
     margin: 26px 0 0;
     padding: 20px 20px 18px;
     background: linear-gradient(180deg, #121A2B, var(--panel));
     border: 1px solid var(--rule);
     border-radius: 8px;
   }
-  .walk-title { font-family: var(--mono); font-size: 17px; font-weight: 600; margin: 0 0 6px; }
-  .walk-intro { color: var(--ink-dim); font-size: 13px; margin: 0 0 14px; max-width: 70ch; }
-  .walk-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
-  .wstep { border-left: 2px solid var(--rule); padding: 4px 0 4px 16px; }
-  .wstep-no { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; color: var(--amber); }
-  .wstep-title { font-family: var(--mono); font-size: 14px; font-weight: 600; margin: 2px 0 4px; }
-  .wstep-body { color: var(--ink-dim); font-size: 13px; margin: 0; line-height: 1.65; }
-  .wstep-body b { color: var(--ink); font-weight: 600; }
-  .wstep-body code {
-    font-family: var(--mono); font-size: 12px; color: var(--green);
-    background: var(--panel-2); padding: 1px 5px; border-radius: 4px; white-space: nowrap;
-  }
+  .flow-title { font-family: var(--mono); font-size: 17px; font-weight: 600; margin: 0 0 6px; }
+  .flow-intro { color: var(--ink-dim); font-size: 13px; margin: 0 0 14px; max-width: 70ch; }
+  .flow-svg { display: block; width: 100%; max-width: 1120px; height: auto; margin: 0 auto; }
+  .flow-node-num { font-family: var(--mono); font-size: 13px; fill: var(--amber); }
+  .flow-node-title { font-family: var(--mono); font-size: 14px; font-weight: 600; fill: var(--ink); }
+  .flow-node-math { font-family: var(--mono); font-size: 13px; fill: var(--green); }
+  .flow-arrow { stroke: var(--ink-faint); fill: var(--ink-faint); stroke-width: 2; }
 
   @media (max-width: 900px) {
     .pipeline { grid-template-columns: 1fr; }
@@ -475,106 +470,66 @@
   </div>
 
   <!-- ================= step-by-step walkthrough ================= -->
-  <section class="walk-panel" aria-label="学习链路七步分步讲解">
-    <p class="walk-title">学习链路 · 七步详解</p>
-    <p class="walk-intro">
-      从输入一张手写数字图片开始，到神经元自己长出对某个数字的偏好，
-      整条链路由以下 7 步组成。每步标注代码中对应的函数与行号。
+  <section class="flow-panel" aria-label="从图片像素到输出分类概率的计算流程">
+    <p class="flow-title">像素 → 概率：这张图是怎么算出来的</p>
+    <p class="flow-intro">
+      从一张 28×28 灰度图，到 0–9 每个数字的概率：这 6 步就是一次完整的前向计算。
+      每步下方标出它用的公式与常量。
     </p>
-
-    <ol class="walk-steps">
-
-      <li class="wstep">
-        <span class="wstep-no">01</span>
-        <p class="wstep-title">初始：权重随机噪声</p>
-        <p class="wstep-body">
-          784 输入像素 × 100 神经元，权重矩阵 <code>W[784×100]</code> 全部初始化为
-          <code>Math.random()*0.3</code> 均匀随机值；每根神经元的 784 条权重按列归一化到固定总和
-          <code>W_NORM = 78.4</code>，保证起步公平。膜电位 <code>V[j] = 0</code>、阈值
-          <code>theta[j] = THETA0 = 15</code>、不应期 <code>refr[j] = 0</code>、放电率 <code>rate[j] = 0</code>。
-          <b>代码：</b><code>resetWeights()</code>（639–650 行）。
-        </p>
-      </li>
-
-      <li class="wstep">
-        <span class="wstep-no">02</span>
-        <p class="wstep-title">前向：图片按亮度转脉冲，抬高膜电位</p>
-        <p class="wstep-body">
-          28×28 灰度图拉成 784 像素值 <code>px[i] ∈ [0,1]</code>。每个时间步 <code>t</code>，对每个亮像素以概率
-          <code>px[i] × SPIKE_GAIN</code>（<code>SPIKE_GAIN = 0.6</code>）发射一个脉冲——越亮放电越多（速率编码）。
-          每发一个脉冲：记下该像素最后放电时刻 <code>lastPre[i] = t</code>，令 <code>encBuf[i] = 1</code> 供编码画布闪烁，
-          再沿突触把权重注入全部 100 个神经元的膜电位 <code>V[j] += W[i*N + j]</code>（处于不应期的跳过）。
-          所有神经元收完脉冲后统一<b>漏电衰减</b> <code>V[j] *= LEAK = 0.94</code>，越早的脉冲贡献越小。
-          <b>代码：</b><code>simStep()</code> 前半（677–690 行）。
-        </p>
-      </li>
-
-      <li class="wstep">
-        <span class="wstep-no">03</span>
-        <p class="wstep-title">竞争：先越阈值者放电，胜者全取</p>
-        <p class="wstep-body">
-          漏电后扫描 100 个神经元，找膜电位最高且越过各自阈值 <code>theta[j]</code> 的那个（跳过 <code>refr[j] &gt; 0</code>）。
-          找到赢家 <code>winner</code> 立即 <code>fire(winner)</code>：<b>侧抑制</b>——所有 <code>V[k] = 0</code> 强制清零，
-          其余 99 个设不应期 <code>refr[k] = 1</code>，赢家自己 <code>refr[winner] = REFR = 4</code> 步。
-          于是每个时刻至多一个神经元放电，每张图只有一个稳定赢家。
-          <b>代码：</b><code>simStep()</code> 中段（692–697 行）选赢家；<code>fire()</code> 开头（713–720 行）侧抑制与不应期。
-        </p>
-      </li>
-
-      <li class="wstep">
-        <span class="wstep-no">04</span>
-        <p class="wstep-title">STDP 更新：赢家放电时，先于它放电的像素突触变强</p>
-        <p class="wstep-body">
-          赢家放电瞬间进入<b>长时程增强（LTP）</b>。遍历当前步刚放电的输入像素 <code>spikeList[k]</code>，检查其最后放电时刻
-          是否落在赢家放电时刻 <code>t</code> 的 <code>TAU_PLUS = 3</code> 步窗口内：<code>t - lastPre[i] &lt;= TAU_PLUS</code>
-          时执行 <code>W[i*N + j] += A_PLUS = 0.8</code>。也就是说，"赢家放电前 3 步以内先放过电"的输入像素，
-          其指向赢家的突触加 0.8。没有反向传播、没有损失函数，只按<b>放电先后时序</b>改权重——这就是 STDP 的全部。
-          <b>代码：</b><code>fire()</code> 中段（721–724 行）。
-        </p>
-      </li>
-
-      <li class="wstep">
-        <span class="wstep-no">05</span>
-        <p class="wstep-title">稳态：权重归一化 + 阈值自适应（两件事）</p>
-        <p class="wstep-body">
-          <b>5a 权重归一化。</b>把赢家这根神经元的 784 条权重求和 <code>s = ΣW[i*N+j]</code>，再整体缩放
-          <code>W[i*N+j] *= W_NORM / s = 78.4 / s</code>。无论 LTP 加了什么，输入总量恒定回 78.4——
-          阻止权重膨胀，并让未被强化的突触相对削弱。<b>代码：</b><code>fire()</code>（725–727 行）。
-          <b>5b 阈值自适应（homeostasis）。</b><code>simStep()</code> 末尾每步给放电率衰减
-          <code>rate[j] *= (1 - RATE_ALPHA)</code>（<code>RATE_ALPHA = 0.002</code>），赢家 <code>rate[winner] += RATE_ALPHA</code>；
-          算 100 个神经元的平均放电率 <code>mean</code>，更新阈值 <code>theta[j] += BETA × RATE_ALPHA × (rate[j] - mean)</code>
-          （<code>BETA = 400</code>）。常放电者阈值抬高（更难放电）、少放电者阈值降低（更易放电），
-          靠拉平放电率实现<b>"雨露均沾"</b>。<b>代码：</b><code>simStep()</code>（699–705 行）。
-        </p>
-      </li>
-
-      <li class="wstep">
-        <span class="wstep-no">06</span>
-        <p class="wstep-title">涌现：重复学习后，权重长成数字笔画</p>
-        <p class="wstep-body">
-          学习模式下训练集<b>随机抽样</b>反复过，每图跑 <code>T = 200</code> 步时序，累计 400 个样本。每跑完一图，
-          赢家对自己常赢的数字标签计数 <code>digCount[j*10 + label]++</code>，偏好 <code>pref[j]</code> 取计数最多者
-          （<code>updatePref()</code>）。因为步骤 04 只增强"常与此神经元放电同时出现的像素"，常对"数字 3"放电的神经元
-          被强化的正是 3 的笔画像素——数百次后，每根神经元的权重图从初始噪声<b>自组织</b>成
-          "我常赢的那类数字的平均笔画"，染色即 <code>pref[j]</code>。
-          <b>代码：</b><code>fire()</code> 末尾（728–731 行）；<code>frame()</code> 学习循环（749–754 行）；
-          <code>renderGrid()</code>（892–918 行）染色。
-        </p>
-      </li>
-
-      <li class="wstep">
-        <span class="wstep-no">07</span>
-        <p class="wstep-title">推理：累计放电最多者，就是答案</p>
-        <p class="wstep-body">
-          切到推理模式，新样本按同样前向链路（步骤 02–03）跑满 <code>T = 200</code> 步，过程<b>不更新权重</b>
-          （不进步骤 04 的 LTP）。每个神经元放电计入 <code>spikeAccum[j]++</code>，最终
-          <code>argmax(spikeAccum)</code> 取放电最多的神经元 <code>win</code>，输出其偏好 <code>pref[win]</code> 作为答案——
-          因为步骤 06 已让该神经元专对某数字的笔画放电最多，"谁最兴奋"即"图里写的是几"。
-          <b>代码：</b><code>spikeAccum[j]++</code>（714 行）；推理判定 <code>renderStage4()</code>（923–943 行）。
-        </p>
-      </li>
-
-    </ol>
+    <svg class="flow-svg" viewBox="0 0 1120 200" role="img" aria-label="从像素到概率的六步计算流程">
+      <g transform="translate(8,25)">
+        <rect width="165" height="150" rx="10" fill="var(--panel-2)" stroke="var(--rule)"/>
+        <text x="82" y="32" text-anchor="middle" class="flow-node-num">① 输入像素</text>
+        <text x="82" y="62" text-anchor="middle" class="flow-node-title">28×28 灰度图</text>
+        <text x="82" y="88" text-anchor="middle" class="flow-node-title">784 维向量</text>
+        <text x="82" y="124" text-anchor="middle" class="flow-node-math">px[i] ∈ [0,1]</text>
+      </g>
+      <line class="flow-arrow" x1="176" y1="100" x2="191" y2="100"/>
+      <polygon class="flow-arrow" points="195,100 186,95 186,105"/>
+      <g transform="translate(195,25)">
+        <rect width="165" height="150" rx="10" fill="var(--panel-2)" stroke="var(--rule)"/>
+        <text x="82" y="32" text-anchor="middle" class="flow-node-num">② 速率编码</text>
+        <text x="82" y="62" text-anchor="middle" class="flow-node-title">越亮越发脉冲</text>
+        <text x="82" y="88" text-anchor="middle" class="flow-node-title">泊松采样</text>
+        <text x="82" y="124" text-anchor="middle" class="flow-node-math">P = px × 0.6</text>
+      </g>
+      <line class="flow-arrow" x1="363" y1="100" x2="378" y2="100"/>
+      <polygon class="flow-arrow" points="382,100 373,95 373,105"/>
+      <g transform="translate(382,25)">
+        <rect width="165" height="150" rx="10" fill="var(--panel-2)" stroke="var(--rule)"/>
+        <text x="82" y="32" text-anchor="middle" class="flow-node-num">③ 积分放电</text>
+        <text x="82" y="62" text-anchor="middle" class="flow-node-title">加权积分 + 漏电</text>
+        <text x="82" y="88" text-anchor="middle" class="flow-node-title">阈值 + 胜者全取</text>
+        <text x="82" y="124" text-anchor="middle" class="flow-node-math">V += W·spike</text>
+      </g>
+      <line class="flow-arrow" x1="550" y1="100" x2="565" y2="100"/>
+      <polygon class="flow-arrow" points="569,100 560,95 560,105"/>
+      <g transform="translate(569,25)">
+        <rect width="165" height="150" rx="10" fill="var(--panel-2)" stroke="var(--rule)"/>
+        <text x="82" y="32" text-anchor="middle" class="flow-node-num">④ 放电计数</text>
+        <text x="82" y="62" text-anchor="middle" class="flow-node-title">T = 200 步</text>
+        <text x="82" y="88" text-anchor="middle" class="flow-node-title">每神经元计数</text>
+        <text x="82" y="124" text-anchor="middle" class="flow-node-math">spikeAccum[j]</text>
+      </g>
+      <line class="flow-arrow" x1="737" y1="100" x2="752" y2="100"/>
+      <polygon class="flow-arrow" points="756,100 747,95 747,105"/>
+      <g transform="translate(756,25)">
+        <rect width="165" height="150" rx="10" fill="var(--panel-2)" stroke="var(--rule)"/>
+        <text x="82" y="32" text-anchor="middle" class="flow-node-num">⑤ 按数字分组</text>
+        <text x="82" y="62" text-anchor="middle" class="flow-node-title">神经元 → 偏好</text>
+        <text x="82" y="88" text-anchor="middle" class="flow-node-title">100 → 10 组</text>
+        <text x="82" y="124" text-anchor="middle" class="flow-node-math">pref[j]</text>
+      </g>
+      <line class="flow-arrow" x1="924" y1="100" x2="939" y2="100"/>
+      <polygon class="flow-arrow" points="943,100 934,95 934,105"/>
+      <g transform="translate(943,25)">
+        <rect width="165" height="150" rx="10" fill="var(--panel-2)" stroke="var(--rule)"/>
+        <text x="82" y="32" text-anchor="middle" class="flow-node-num">⑥ 概率分布</text>
+        <text x="82" y="62" text-anchor="middle" class="flow-node-title">0–9 概率条</text>
+        <text x="82" y="88" text-anchor="middle" class="flow-node-title">归一化成概率</text>
+        <text x="82" y="124" text-anchor="middle" class="flow-node-math">P(d) = c_d / Σ</text>
+      </g>
+    </svg>
   </section>
 
   <p class="note">
