@@ -420,6 +420,10 @@ const fireHist = new Int16Array(T).fill(-1);   // winner at each step of current
 const vAll = new Float32Array(N * T);          // membrane potential history (inference)
 const thAll = new Float32Array(N * T);
 const encBuf = new Float32Array(NIN);
+let preCount = new Float32Array(NIN);          // per-input-pixel spike count (current sample)
+let flash = new Float32Array(NIN * N);         // ΔW highlight intensity, decays per frame
+let fireT = -1, fireV = 0, fireTheta = THETA0; // snapshot of the last firing event
+let lastLTP = 0, lastNorm = 1;                 // last firing: LTP synapse count + norm factor
 
 function resetWeights() {
   for (let i = 0; i < NIN * N; i++) W[i] = Math.random() * 0.3;
@@ -431,6 +435,8 @@ function resetWeights() {
   }
   V.fill(0); theta.fill(THETA0); refr.fill(0); rate.fill(0);
   digCount.fill(0); pref.fill(0); spikeAccum.fill(0); encBuf.fill(0);
+  preCount.fill(0); flash.fill(0);
+  fireT = -1; fireV = 0; fireTheta = THETA0; lastLTP = 0; lastNorm = 1;
   lastPre.fill(-1); trained = 0; lastFire = -1; cur = null;
 }
 
@@ -450,6 +456,7 @@ function updatePref(j) {
 function startSample(s) {
   cur = s; t = 0; lastFire = -1;
   spikeAccum.fill(0); fireHist.fill(-1); lastPre.fill(-1); V.fill(0); refr.fill(0);
+  preCount.fill(0); flash.fill(0);
   setInputLabel(s);
 }
 
@@ -469,6 +476,7 @@ function simStep() {
     const i = spikeList[k];
     lastPre[i] = t;
     encBuf[i] = 1;
+    preCount[i]++;
     const base = i * N;
     for (let j = 0; j < N; j++) if (refr[j] <= 0) V[j] += W[base + j];
   }
@@ -479,7 +487,10 @@ function simStep() {
     if (refr[j] > 0) continue;
     if (V[j] >= theta[j] && V[j] > bestV) { bestV = V[j]; winner = j; }
   }
-  if (winner >= 0) fire(winner);
+  if (winner >= 0) {
+    fireT = t; fireV = bestV; fireTheta = theta[winner];
+    fire(winner);
+  }
 
   for (let j = 0; j < N; j++) if (refr[j] > 0) refr[j]--;
   for (let j = 0; j < N; j++) rate[j] *= (1 - RATE_ALPHA);
@@ -503,13 +514,20 @@ function fire(j) {
     if (k !== j && refr[k] <= 0) refr[k] = 1;
   }
   refr[j] = REFR;
+  let ltp = 0;                                     // count of LTP-updated synapses this fire
   for (let k = 0; k < spikeList.length; k++) {     // STDP: LTP for recently-pre-spiked inputs
     const i = spikeList[k];
-    if (lastPre[i] >= 0 && t - lastPre[i] <= TAU_PLUS) W[i * N + j] += A_PLUS;
+    if (lastPre[i] >= 0 && t - lastPre[i] <= TAU_PLUS) {
+      W[i * N + j] += A_PLUS;
+      if (mode === "learn") flash[i * N + j] = 1;
+      ltp++;
+    }
   }
   let s = 0;                                       // weight normalization
   for (let i = 0; i < NIN; i++) s += W[i * N + j];
-  if (s > 0) { const c = W_NORM / s; for (let i = 0; i < NIN; i++) W[i * N + j] *= c; }
+  let c = 1;
+  if (s > 0) { c = W_NORM / s; for (let i = 0; i < NIN; i++) W[i * N + j] *= c; }
+  lastLTP = ltp; lastNorm = c;
   if (mode === "learn" && cur.train) {             // track which digit this neuron prefers
     digCount[j * 10 + cur.label]++;
     updatePref(j);
