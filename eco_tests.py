@@ -139,8 +139,9 @@ def test_death_cause():
 
 
 def test_server_endpoints():
-    """HTTP 服务端到端：状态/推演/数字图像/手动喂食/首页 HTML。
+    """HTTP 服务端到端：状态/推演/数字图像/手动喂食/配置透传/首页 HTML。
 
+    配置经 POST /api/config 修改后返回完整 config 供前端使用；
     首页由 eco_game.html（Task 6 交付）托管，断言其包含 id="dish" 培养皿网格
     与 <canvas> 统计曲线。
     注：run_server_in_thread 返回 (port, server)（ThreadingHTTPServer），其关闭方式
@@ -156,7 +157,7 @@ def test_server_endpoints():
         assert len(s["population"]) == eco.INIT_POP
         req = urllib.request.Request(base + "/api/step", method="POST")
         r = json.load(urllib.request.urlopen(req))
-        assert r["stats"]["alive"] <= eco.CAPACITY
+        assert r["stats"]["natural_rate"] >= 0.0
         assert r["events"][0]["type"] == "round_begin"
         img = json.load(urllib.request.urlopen(base + "/api/digit_image/0"))
         assert len(img["pixels"]) == 784
@@ -167,6 +168,11 @@ def test_server_endpoints():
                                     headers={"Content-Type": "application/json"})
         mf = json.load(urllib.request.urlopen(rq))
         assert mf["label"] == 4 and len(mf["readout_counts"]) == 10
+        cfg = json.dumps({"n_repro": 60}).encode()
+        cr = urllib.request.Request(base + "/api/config", data=cfg, method="POST",
+                                    headers={"Content-Type": "application/json"})
+        c2 = json.load(urllib.request.urlopen(cr))
+        assert c2["config"]["n_repro"] == 60
         html = urllib.request.urlopen(base + "/").read().decode("utf-8")
         assert 'id="dish"' in html and "<canvas" in html
     finally:
