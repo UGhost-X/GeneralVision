@@ -438,7 +438,7 @@ function renderProb(){
   }
 }
 function renderCalc(){
-  const e=(id,txt,dim)=>{const el=document.getElementById(id);el.textContent=txt;el.className="live"+(dim?" dim":"");};
+  const e=(id,html,dim)=>{const el=document.getElementById(id);el.innerHTML=html;el.className="live"+(dim?" dim":"");};
   // ① 输入像素
   e("c1",`最亮 px=<b>${brightPx.toFixed(3)}</b>（u=${Math.round(brightPx*255)}）· 亮像素（px>0.5）=<b>${(()=>{let n=0;for(let i=0;i<NIN;i++)if(px[i]>0.5)n++;return n;})()}</b> 个`);
   // ② 速率编码
