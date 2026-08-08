@@ -28,6 +28,7 @@ MUT_RATE = 0.001         # 千分之一大突变
 SURVIVAL_ROUNDS = 20     # 自然寿命上限（回合）
 N_REPRO = 50             # 每对每次繁殖数量 = 存活回合数 × N
 CAPACITY = 500           # 环境承载力（种群上限；全容量回合约 3-4s，网页游戏可玩）
+DENSITY_FLOOR = 0.05     # 密度地板：承载力处仍有 5% 替代性繁殖，防"满→90%暴毙→回填"锯齿
 INIT_POP = 60            # 初始/全灭重播种群数
 
 
@@ -234,7 +235,7 @@ class Ecosystem:
         pairs = [(survivors[j], survivors[j + 1]) for j in range(0, len(survivors) - 1, 2)]
         births: list[Genome] = []
         if pairs:
-            density = max(0.0, 1.0 - len(self.pop) / self.capacity)
+            density = max(DENSITY_FLOOR, 1.0 - len(self.pop) / self.capacity)
             brood = int(round(self.survival_rounds * self.n_repro * density))
             room = max(0, self.capacity - len(survivors))
             target = min(room, len(pairs) * brood)
