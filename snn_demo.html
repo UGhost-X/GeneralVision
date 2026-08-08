@@ -724,10 +724,14 @@ function renderCounts() {
   document.getElementById("progBar").style.width = (trained / TRAIN.length * 100).toFixed(1) + "%";
 }
 // ---------- probability output ----------
-function computeProb() {
+function computeCounts() {
   const counts = new Array(10).fill(0);
   let total = 0;
   for (let j = 0; j < N; j++) { counts[pref[j]] += spikeAccum[j]; total += spikeAccum[j]; }
+  return { counts, total };
+}
+function computeProb() {
+  const { counts, total } = computeCounts();
   return total > 0 ? counts.map(c => c / total) : null;
 }
 
@@ -755,6 +759,88 @@ function renderProb(prob) {
     ctx.globalAlpha = 1;
   }
 }
+
+// ---------- live calculation panel ----------
+function setCalc(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+function renderCalc() {
+  if (!cur) {
+    for (let k = 1; k <= 6; k++) setCalc("calc" + k, "—");
+    renderCalcSpark(null);
+    return;
+  }
+  let mi = 0;                                      // brightest pixel
+  for (let i = 1; i < NIN; i++) if (cur.px[i] > cur.px[mi]) mi = i;
+  let bright = 0;
+  for (let i = 0; i < NIN; i++) if (cur.px[i] > 0.5) bright++;
+  setCalc("calc1", "最亮像素 px=" + cur.px[mi].toFixed(2) + " · 亮像素(px>0.5) " + bright + " 个");
+
+  const P = cur.px[mi] * SPIKE_GAIN;
+  setCalc("calc2", "最亮像素 P=" + P.toFixed(2) + " · 该像素本图已放电 " + Math.round(preCount[mi]) + "/" + t + " 步");
+
+  if (lastFire >= 0 && fireT >= 0) {
+    setCalc("calc3", "神经元 #" + lastFire + " 在 t=" + fireT + " 步 V=" + fireV.toFixed(1) + " ≥ θ=" + fireTheta.toFixed(1) + " 放电");
+  } else {
+    setCalc("calc3", "尚无神经元放电");
+  }
+
+  let total = 0;
+  for (let j = 0; j < N; j++) total += spikeAccum[j];
+  setCalc("calc4", (lastFire >= 0 ? "神经元 #" + lastFire + " 本图放电 " + Math.round(spikeAccum[lastFire]) + " 次" : "尚未放电") + " · 全体共 " + Math.round(total) + " 次");
+
+  if (mode === "learn") {
+    setCalc("calc5", "学习模式下不判定概率");
+    setCalc("calc6", "—");
+  } else if (trained === 0) {
+    setCalc("calc5", "先切「学习」播放一轮，才有神经元偏好分组");
+    setCalc("calc6", "—");
+  } else {
+    const { counts } = computeCounts();
+    setCalc("calc5", "c_d = " + counts.join(" / "));
+    const prob = computeProb();
+    if (prob) {
+      const maxD = argmax(prob, 10);
+      setCalc("calc6", "P = " + prob.map(x => x.toFixed(2)).join(" / ") + "  → 最可能数字 " + maxD);
+    } else {
+      setCalc("calc6", "本图无神经元放电");
+    }
+  }
+  renderCalcSpark(lastFire >= 0 ? lastFire : null);
+}
+function renderCalcSpark(j) {
+  const cv = document.getElementById("calcSpark");
+  if (!cv) return;
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (j === null || j < 0 || mode !== "infer" || t === 0) return;
+  const w = cv.width, h = cv.height;
+  const xScale = w / T;
+  let vmax = 0;
+  for (let tt = 0; tt < t; tt++) {
+    const v = vAll[j * T + tt] / thAll[j * T + tt];
+    if (v > vmax) vmax = v;
+  }
+  if (vmax <= 0) return;
+  ctx.beginPath();
+  for (let tt = 0; tt < t; tt++) {
+    const nv = vAll[j * T + tt] / thAll[j * T + tt] / vmax;
+    const x = (tt + 0.5) * xScale;
+    const y = h - 5 - nv * (h - 9);
+    if (tt === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = "#4CC9F0"; ctx.lineWidth = 1.4; ctx.stroke();
+  for (let tt = 0; tt < t; tt++) {
+    if (fireHist[tt] !== j) continue;
+    const nv = vAll[j * T + tt] / thAll[j * T + tt] / vmax;
+    const x = (tt + 0.5) * xScale;
+    const y = h - 5 - nv * (h - 9);
+    ctx.fillStyle = "#FFB454";
+    ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
 function renderStage4() {
   const main = document.getElementById("verdictMain");
   const sub = document.getElementById("verdictSub");
