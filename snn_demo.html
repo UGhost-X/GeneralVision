@@ -116,45 +116,56 @@
   }
   .btn.play:hover { background: #FFC87E; color: #17130A; }
 
-  /* ---------- pipeline ---------- */
-  .pipeline {
-    display: grid;
-    grid-template-columns: 1fr 60px 1fr 60px 1fr 60px 1fr;
-    align-items: stretch;
-    gap: 4px;
-  }
-  .stage {
+  /* ---------- input → output ---------- */
+  .io-row { display: flex; align-items: stretch; gap: 22px; margin: 22px 0 26px; }
+  .io-card {
     background: var(--panel);
     border: 1px solid var(--rule);
     border-radius: 8px;
-    padding: 14px 14px 12px;
+    padding: 16px 18px 14px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    min-width: 0;
+    align-items: center;
+    gap: 12px;
   }
-  .stage-no {
+  .io-card.io-out { flex: 1 1 auto; min-width: 0; }
+  .io-title {
     font-family: var(--mono);
     font-size: 11px;
     letter-spacing: 0.14em;
-    color: var(--amber);
     text-transform: uppercase;
-    margin: 0;
-  }
-  .stage-title {
-    font-family: var(--mono);
-    font-size: 15px;
-    font-weight: 600;
-    margin: 2px 0 0;
-    letter-spacing: -0.01em;
-  }
-  .stage-cap {
     color: var(--ink-dim);
-    font-size: 12.5px;
     margin: 0;
-    flex-grow: 1;
   }
-  .stage-cap b { color: var(--ink); font-weight: 600; }
+  .io-arrow { align-self: center; font-size: 26px; color: var(--ink-faint); font-family: var(--mono); }
+
+  /* ---------- live calculation panel ---------- */
+  .calc-panel {
+    margin: 26px 0 0;
+    padding: 20px 20px 18px;
+    background: linear-gradient(180deg, #121A2B, var(--panel));
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+  }
+  .panel-title { font-family: var(--mono); font-size: 17px; font-weight: 600; margin: 0 0 6px; }
+  .panel-sub { color: var(--ink-dim); font-size: 13px; margin: 0 0 16px; max-width: 70ch; }
+  .calc-rows { display: flex; flex-direction: column; gap: 8px; }
+  .calc-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--rule-soft);
+    border-radius: 6px;
+    flex-wrap: wrap;
+  }
+  .cno { font-family: var(--mono); font-weight: 700; color: var(--amber); }
+  .cf { font-family: var(--mono); font-size: 12.5px; color: var(--green); white-space: nowrap; }
+  .cv { font-family: var(--mono); font-size: 12.5px; color: var(--cyan); min-width: 0; }
+  .spark { display: block; margin-left: auto; }
+  .dw-readout { margin: 12px 0 0; font-family: var(--mono); font-size: 12.5px; color: var(--ink-dim); }
+  .dw-readout b { color: var(--amber); }
   .canvas-host { display: flex; justify-content: center; }
   canvas.px { image-rendering: pixelated; max-width: 100%; height: auto; }
   canvas.line { max-width: 100%; height: auto; display: block; }
@@ -192,55 +203,7 @@
   .verdict-sub b { color: var(--ink); font-family: var(--mono); }
   .learn-note { color: var(--cyan); font-size: 13px; }
 
-  /* connectors */
-  .conn { align-self: center; display: flex; flex-direction: column; align-items: center; gap: 4px; }
-  .conn svg { display: block; width: 60px; height: 46px; }
-  .conn .cline { stroke: var(--ink-faint); stroke-width: 1.6; stroke-dasharray: 5 5; animation: dashmove 1s linear infinite; }
-  .conn .carrow { fill: var(--ink-faint); }
-  @keyframes dashmove { to { stroke-dashoffset: -10; } }
-  .conn-label {
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--ink-faint);
-    text-align: center;
-    letter-spacing: 0.02em;
-    white-space: nowrap;
-  }
 
-  .pipeline-legend {
-    margin: 12px 0 0;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 16px;
-    justify-content: center;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--ink-faint);
-  }
-  .pipeline-legend span { display: inline-flex; align-items: center; gap: 6px; }
-  .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
-  .sw.amber { background: var(--amber); box-shadow: 0 0 6px rgba(255,180,84,.7); }
-  .sw.cyan { background: var(--cyan); }
-  .sw.red { background: var(--red); }
-
-  /* ---------- scope panel ---------- */
-  .scope-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 26px 0; }
-  .scope-card {
-    background: var(--panel);
-    border: 1px solid var(--rule);
-    border-radius: 8px;
-    padding: 14px 16px 12px;
-  }
-  .scope-title {
-    font-family: var(--mono);
-    font-size: 12px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--ink-dim);
-    margin: 0 0 10px;
-  }
-  .scope-title .tick { color: var(--amber); }
-  .scope-cap { font-size: 12px; color: var(--ink-faint); margin: 8px 0 0; }
 
   /* ---------- learning panel ---------- */
   .learn-panel {
@@ -290,29 +253,10 @@
   }
   .note code { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); }
 
-  /* ---------- pixel→probability flow ---------- */
-  .flow-panel {
-    margin: 26px 0 0;
-    padding: 20px 20px 18px;
-    background: linear-gradient(180deg, #121A2B, var(--panel));
-    border: 1px solid var(--rule);
-    border-radius: 8px;
-  }
-  .flow-title { font-family: var(--mono); font-size: 17px; font-weight: 600; margin: 0 0 6px; }
-  .flow-intro { color: var(--ink-dim); font-size: 13px; margin: 0 0 14px; max-width: 70ch; }
-  .flow-svg { display: block; width: 100%; max-width: 1120px; height: auto; margin: 0 auto; }
-  .flow-node-num { font-family: var(--mono); font-size: 13px; fill: var(--amber); }
-  .flow-node-title { font-family: var(--mono); font-size: 14px; font-weight: 600; fill: var(--ink); }
-  .flow-node-math { font-family: var(--mono); font-size: 13px; fill: var(--green); }
-  .flow-arrow { stroke: var(--ink-faint); fill: var(--ink-faint); stroke-width: 2; }
 
   @media (max-width: 900px) {
-    .pipeline { grid-template-columns: 1fr; }
-    .conn svg { transform: rotate(90deg); }
-    .scope-grid { grid-template-columns: 1fr; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .conn .cline { animation: none; }
+    .io-row { flex-direction: column; align-items: stretch; }
+    .io-arrow { transform: rotate(90deg); }
   }
   :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
 </style>
