@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>🧫 LIF 生态游戏</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --txt:#e6edf3;
+          --ok:#3fb950; --bad:#f85149; --dim:#8b949e; --accent:#58a6ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font:14px/1.5 "Segoe UI", system-ui, sans-serif; }
+  header { display:flex; align-items:center; gap:14px; padding:10px 18px;
+           border-bottom:1px solid var(--line); position:sticky; top:0;
+           background:var(--bg); z-index:5; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  .btn { background:var(--panel); color:var(--txt); border:1px solid var(--line);
+         border-radius:6px; padding:4px 10px; cursor:pointer; }
+  .btn:hover { border-color:var(--accent); }
+  #statsLabel { color:var(--dim); font-size:12px; }
+  main { display:grid; grid-template-columns: 1fr 320px; gap:12px; padding:12px; }
+  #dish { display:grid; grid-template-columns: repeat(auto-fill,minmax(118px,1fr));
+          gap:8px; align-content:start; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+          padding:8px; position:relative; transition:opacity .6s, transform .4s; }
+  .card.dead { opacity:.25; filter:grayscale(1); transform:scale(.92); }
+  .card .nm { font-size:11px; color:var(--dim); }
+  .card .big { font-size:30px; font-weight:700; text-align:center; margin:4px 0; }
+  .card .bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; }
+  .card .bar > i { display:block; height:100%; background:var(--ok); }
+  .card .meta { font-size:10px; color:var(--dim); display:flex; justify-content:space-between; }
+  #side { display:flex; flex-direction:column; gap:12px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; }
+  #curves { width:100%; height:180px; }
+  .feedbtn { width:34px; height:34px; margin:2px; font-size:15px; cursor:pointer;
+             background:var(--panel); color:var(--txt); border:1px solid var(--line);
+             border-radius:6px; }
+  .feedbtn:hover { border-color:var(--accent); }
+  #manualResult { margin-top:8px; font-size:13px; }
+  #manualResult canvas { image-rendering:pixelated; background:#000; border-radius:4px; }
+  .mm { font-size:11px; color:var(--dim); margin-top:6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧫 LIF 生态游戏</h1>
+  <span id="dayLabel" class="dim"></span>
+  <button class="btn" id="playBtn">⏸ 自动</button>
+  <button class="btn" id="stepBtn">⏭ 推演一天</button>
+  <label>速度 <input id="speed" type="range" min="50" max="1500" value="600" style="width:120px"></label>
+  <span id="statsLabel"></span>
+</header>
+<main>
+  <div id="dish"></div>
+  <aside id="side">
+    <div class="panel"><b>种群统计</b>
+      <canvas id="curves"></canvas>
+      <div class="mm" id="curveLegend">蓝=平均吃对率　绿=最优吃对率　灰=存活数</div>
+    </div>
+    <div class="panel"><b>手动喂食</b>
+      <div id="manualBtns"></div>
+      <div id="manualResult"></div>
+    </div>
+    <div class="panel"><b>个体解剖</b><div id="anatomy">点击任意生物体查看</div></div>
+  </aside>
+</main>
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const state = { day:0, pop:new Map(), stats:null, auto:true, speed:600,
+                accSeries:[], bestSeries:[], aliveSeries:[] };
+
+// ---------- 渲染 ----------
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function el(tag, cls, html){ const e=document.createElement(tag); if(cls)e.className=cls;
+  if(html!=null)e.innerHTML=html; return e; }
+
+function cardHtml(g){
+  const acc = state.stats ? (state.pop.get(g.name)?.acc ?? 0) : 0;
+  return `<div class="nm">${esc(g.name)}</div>
+    <div class="big">${state.pop.get(g.name)?.lastProduced ?? '·'}</div>
+    <div class="bar"><i style="width:${Math.round(acc*100)}%"></i></div>
+    <div class="meta"><span>吃对 ${(acc*100).toFixed(0)}%</span><span>${g.age} 天</span></div>`;
+}
+
+function renderCards(){
+  const dish = $("#dish"); dish.innerHTML = "";
+  for (const g of state.pop.values()){
+    const c = el("div", "card" + (g.alive ? "" : " dead"));
+    c.dataset.name = g.name;
+    c.innerHTML = cardHtml(g);
+    c.addEventListener("click", () => showAnatomy(g.name));
+    dish.appendChild(c);
+  }
+}
+
+function drawCurves(){
+  const cv = $("#curves"), ctx = cv.getContext("2d");
+  const W = cv.width = cv.clientWidth * devicePixelRatio;
+  const H = cv.height = cv.clientHeight * devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio); ctx.clearRect(0,0,W,H);
+  const n = state.accSeries.length; if (n < 2) return;
+  const plot = (series, color) => {
+    const cw = cv.clientWidth, ch = cv.clientHeight;
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+    series.forEach((v,i) => { const x = i/(n-1)*cw, y = ch - v*ch;
+      i ? ctx.lineTo(x,y) : ctx.moveTo(x,y); });
+    ctx.stroke();
+  };
+  plot(state.accSeries, "#58a6ff");
+  plot(state.bestSeries, "#3fb950");
+}
+
+function updateHeader(){
+  $("#dayLabel").textContent = `第 ${state.day} 天`;
+  const s = state.stats;
+  $("#statsLabel").innerHTML = s
+    ? `种群 <b>${s.alive}</b> · 平均吃对率 <b>${(s.avg_acc*100).toFixed(1)}%</b> · 最优 <b>${esc(s.best_name)} ${(s.best_acc*100).toFixed(1)}%</b>`
+    : "加载中…";
+}
+
+async function loadState(){
+  const s = await (await fetch("/api/state")).json();
+  state.day = s.day; state.stats = s.stats;
+  for (const p of s.population) state.pop.set(p.name, {...p, acc:0, lastProduced:"·"});
+  renderCards(); drawCurves(); updateHeader();
+}
+
+// ---------- 推演 ----------
+async function stepDay(){
+  const r = await (await fetch("/api/step", {method:"POST"})).json();
+  state.day = r.day;
+  replayEvents(r.events, r.stats);
+}
+
+function replayEvents(events, stats){
+  state.stats = stats;
+  for (const e of events){
+    if (e.type === "org_day"){
+      const g = state.pop.get(e.name); if(!g) continue;
+      g.acc = e.acc; g.lastProduced = e.produced[0] === -1 ? "?" : e.produced[0];
+      g.readoutProfile = e.readout_profile;
+    } else if (e.type === "death"){
+      const g = state.pop.get(e.name); if(g) g.alive = false;
+    } else if (e.type === "birth"){
+      state.pop.set(e.name, {name:e.name, age:0, born_gen:e.gen, parents:e.parents,
+                             alive:true, acc:0, lastProduced:"·"});
+    } else if (e.type === "day_end"){
+      state.stats = e.stats;
+      state.accSeries.push(e.stats.avg_acc);
+      state.bestSeries.push(e.stats.best_acc);
+      state.aliveSeries.push(e.stats.alive);
+    }
+  }
+  renderCards(); drawCurves(); updateHeader();
+}
+
+// ---------- 控制 ----------
+let lastStep = 0;
+async function autoLoop(){
+  if (!state.auto) return;
+  const now = performance.now();
+  if (now - lastStep >= state.speed){ lastStep = now; await stepDay(); }
+  requestAnimationFrame(autoLoop);
+}
+$("#playBtn").addEventListener("click", () => {
+  state.auto = !state.auto;
+  $("#playBtn").textContent = state.auto ? "⏸ 自动" : "▶ 手动";
+  if (state.auto) requestAnimationFrame(autoLoop);
+});
+$("#stepBtn").addEventListener("click", () => { state.auto = false;
+  $("#playBtn").textContent = "▶ 手动"; stepDay(); });
+$("#speed").addEventListener("input", e => state.speed = +e.target.value);
+
+// ---------- 骨架预留（Task 7 实现）----------
+function showAnatomy(name){ /* Task 7 */ }
+
+(async function init(){
+  $("#dayLabel").textContent = "加载中…";
+  await loadState();
+  requestAnimationFrame(autoLoop);
+})();
+</script>
+</body>
+</html>

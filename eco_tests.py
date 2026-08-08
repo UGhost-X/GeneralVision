@@ -104,14 +104,14 @@ def test_day_loop_invariants():
 
 
 def test_server_endpoints():
-    """HTTP 服务端到端：状态/推演/数字图像/手动喂食/首页 500 兜底。
+    """HTTP 服务端到端：状态/推演/数字图像/手动喂食/首页 HTML。
 
-    注：eco_game.html 由 Task 6 交付，本任务中 GET / 应返回 500 JSON 错误；
-    eco_game.html 就位后，此断言应改回校验 HTML 内容（含 <canvas> 或 id="dish"）。
+    首页由 eco_game.html（Task 6 交付）托管，断言其包含 id="dish" 培养皿网格
+    与 <canvas> 统计曲线。
     注：run_server_in_thread 返回 (port, server)（ThreadingHTTPServer），其关闭方式
     为 server.shutdown() + server.server_close()（无 join 方法）。
     """
-    import threading, json, urllib.request, urllib.error
+    import threading, json, urllib.request
     from eco_server import run_server_in_thread, PORT_DEFAULT
     port, server = run_server_in_thread(seed=0)
     base = f"http://127.0.0.1:{port}"
@@ -130,12 +130,8 @@ def test_server_endpoints():
                                     headers={"Content-Type": "application/json"})
         mf = json.load(urllib.request.urlopen(rq))
         assert mf["label"] == 4 and len(mf["readout_counts"]) == 10
-        try:  # eco_game.html 尚不存在（Task 6 交付）→ 应返回 500 JSON 错误
-            urllib.request.urlopen(base + "/")
-            raise AssertionError("eco_game.html 缺失时 GET / 应返回 500")
-        except urllib.error.HTTPError as e:
-            assert e.code == 500, e.code
-            assert "error" in json.loads(e.read().decode("utf-8"))
+        html = urllib.request.urlopen(base + "/").read().decode("utf-8")
+        assert 'id="dish"' in html and "<canvas" in html
     finally:
         server.shutdown()
         server.server_close()
