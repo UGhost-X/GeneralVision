@@ -103,6 +103,44 @@ def test_day_loop_invariants():
     assert _run2(9) == _run2(9), "同 seed 应可复现"
 
 
+def test_server_endpoints():
+    """HTTP 服务端到端：状态/推演/数字图像/手动喂食/首页 500 兜底。
+
+    注：eco_game.html 由 Task 6 交付，本任务中 GET / 应返回 500 JSON 错误；
+    eco_game.html 就位后，此断言应改回校验 HTML 内容（含 <canvas> 或 id="dish"）。
+    注：run_server_in_thread 返回 (port, server)（ThreadingHTTPServer），其关闭方式
+    为 server.shutdown() + server.server_close()（无 join 方法）。
+    """
+    import threading, json, urllib.request, urllib.error
+    from eco_server import run_server_in_thread, PORT_DEFAULT
+    port, server = run_server_in_thread(seed=0)
+    base = f"http://127.0.0.1:{port}"
+    try:
+        s = json.load(urllib.request.urlopen(base + "/api/state"))
+        assert s["config"]["pop_cap"] == eco.POP_CAP
+        assert len(s["population"]) == eco.INIT_POP
+        req = urllib.request.Request(base + "/api/step", method="POST")
+        r = json.load(urllib.request.urlopen(req))
+        assert r["stats"]["alive"] == eco.POP_CAP
+        assert r["events"][0]["type"] == "day_begin"
+        img = json.load(urllib.request.urlopen(base + "/api/digit_image/0"))
+        assert len(img["pixels"]) == 784
+        body = json.dumps({"digit": 4, "name": s["population"][0]["name"]}).encode()
+        rq = urllib.request.Request(base + "/api/manual_feed", data=body, method="POST",
+                                    headers={"Content-Type": "application/json"})
+        mf = json.load(urllib.request.urlopen(rq))
+        assert mf["label"] == 4 and len(mf["readout_counts"]) == 10
+        try:  # eco_game.html 尚不存在（Task 6 交付）→ 应返回 500 JSON 错误
+            urllib.request.urlopen(base + "/")
+            raise AssertionError("eco_game.html 缺失时 GET / 应返回 500")
+        except urllib.error.HTTPError as e:
+            assert e.code == 500, e.code
+            assert "error" in json.loads(e.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 if __name__ == "__main__":
     for _name, _fn in sorted(globals().items()):
         if _name.startswith("test_") and callable(_fn):
