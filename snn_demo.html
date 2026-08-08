@@ -320,10 +320,10 @@
 <div class="wrap">
 
   <p class="eyebrow">Spike &middot; Integrate &middot; Fire &middot; Learn</p>
-  <h1>模拟生物神经元：一个脉冲神经网络的工作流程</h1>
+  <h1>像素 → 概率：这张图是怎么算出来的</h1>
   <p class="subtitle">
-    输入在这里不是连续的<b>数值</b>，而是一串串全或无的<b>放电脉冲</b>。网络没有损失函数、没有反向传播——
-    突触权重只按放电的<b>先后时序</b>调整（STDP）。观看这个 784→100 的单层脉冲网络，从噪声开始，自己长出偏好数字的神经元。
+    一张 <b>28×28</b> 灰度图进入 784→100 的单层 LIF 脉冲网络，怎么变成 0–9 的<b>概率</b>？
+    下方 6 步用当前这张图的<b>真实数值</b>实时演算；学习模式下，STDP 逐次<b>更新权重</b>——网格上闪白的位置就是刚被增强的突触。
   </p>
 
   <!-- ================= controls ================= -->
@@ -359,66 +359,19 @@
     <button class="btn" id="btnReset">重置权重</button>
   </div>
 
-  <!-- ================= pipeline ================= -->
-  <div class="pipeline">
-    <div class="stage">
-      <p class="stage-no">Stage 1</p>
-      <p class="stage-title">输入图像</p>
+  <!-- ================= input → output ================= -->
+  <div class="io-row">
+    <div class="io-card">
+      <p class="io-title">输入图像</p>
       <div class="canvas-host pxframe">
-        <canvas id="canvasIn" width="28" height="28" class="px" style="width:196px;height:196px"
+        <canvas id="canvasIn" width="28" height="28" class="px" style="width:132px;height:132px"
                 role="img" aria-label="当前输入的手写数字图像"></canvas>
         <span class="badge" id="inputLabel">—</span>
       </div>
-      <p class="stage-cap">一张 <b>28×28</b> 的手写数字灰度图。亮度范围 0–255。</p>
     </div>
-
-    <div class="conn" role="img" aria-label="灰度转脉冲">
-      <svg viewBox="0 0 54 46">
-        <line class="cline" x1="3" y1="30" x2="49" y2="30"/>
-        <polygon class="carrow" points="49,30 40,25.5 40,34.5"/>
-      </svg>
-      <span class="conn-label">速率编码</span>
-    </div>
-
-    <div class="stage">
-      <p class="stage-no">Stage 2</p>
-      <p class="stage-title">脉冲编码</p>
-      <div class="canvas-host">
-        <canvas id="canvasEnc" width="28" height="28" class="px" style="width:196px;height:196px"
-                role="img" aria-label="像素放电脉冲动画"></canvas>
-      </div>
-      <p class="stage-cap">越亮的像素，每毫秒 <b>放电越多</b>（速率编码）。亮斑是正在放电的像素——信息从"数值"变成了"脉冲的多少与时刻"。</p>
-    </div>
-
-    <div class="conn" role="img" aria-label="脉冲输入">
-      <svg viewBox="0 0 54 46">
-        <line class="cline" x1="3" y1="30" x2="49" y2="30"/>
-        <polygon class="carrow" points="49,30 40,25.5 40,34.5"/>
-      </svg>
-      <span class="conn-label">脉冲序列</span>
-    </div>
-
-    <div class="stage">
-      <p class="stage-no">Stage 3</p>
-      <p class="stage-title">积分放电 · 侧抑制</p>
-      <div class="canvas-host">
-        <canvas id="canvasLif" width="420" height="132" class="line"
-                role="img" aria-label="100个神经元的膜电位与放电动画"></canvas>
-      </div>
-      <p class="stage-cap">100 根柱子 = 100 个神经元。每个神经元把脉冲<b>积分</b>进膜电位（青色）并在每步<b>漏电衰减</b>；谁先越过阈值（发亮的<b>琥珀色</b>），谁就放电并<b>抑制其余所有神经元</b>（红色）——胜者全取。</p>
-    </div>
-
-    <div class="conn" role="img" aria-label="胜者神经元输出">
-      <svg viewBox="0 0 54 46">
-        <line class="cline" x1="3" y1="30" x2="49" y2="30"/>
-        <polygon class="carrow" points="49,30 40,25.5 40,34.5"/>
-      </svg>
-      <span class="conn-label">胜者全取</span>
-    </div>
-
-    <div class="stage">
-      <p class="stage-no">Stage 4</p>
-      <p class="stage-title">输出判定</p>
+    <div class="io-arrow" aria-hidden="true">→</div>
+    <div class="io-card io-out">
+      <p class="io-title">输出概率</p>
       <div class="verdict">
         <div class="verdict-main" id="verdictMain">—</div>
         <div class="verdict-sub" id="verdictSub">请先按 ▶ 播放，或切到「学习」</div>
@@ -427,36 +380,27 @@
         <canvas id="canvasProb" width="360" height="110" class="line" role="img"
                 aria-label="0到9数字的分类概率柱状图"></canvas>
       </div>
-      <p class="stage-cap">整张图看完后，<b>放电最多的那个神经元</b>就是网络的"答案"；下方是 0–9 每个数字的放电占比（概率）。</p>
     </div>
   </div>
 
-  <div class="pipeline-legend">
-    <span><i class="sw amber"></i>放电脉冲 / 胜者</span>
-    <span><i class="sw cyan"></i>膜电位（随时间积分、漏电）</span>
-    <span><i class="sw red"></i>侧抑制（被压下去的神经元）</span>
-  </div>
-
-  <!-- ================= scope ================= -->
-  <div class="scope-grid">
-    <div class="scope-card">
-      <p class="scope-title"><span class="tick">▂▂</span> 栅格图 · 100 个神经元的放电时刻</p>
-      <canvas id="canvasRaster" width="500" height="200" class="line"
-              role="img" aria-label="神经放电栅格图，横轴时间纵轴神经元编号"></canvas>
-      <p class="scope-cap">每一行是一个神经元，每个琥珀色点 = 它在那个时刻放了一次电。这是神经科学里的标准记录方式。</p>
+  <!-- ================= pixel→probability: live calculation ================= -->
+  <section class="calc-panel" aria-label="从像素到概率的实时数值演算">
+    <p class="panel-title">像素 → 概率：这张图是怎么算出来的</p>
+    <p class="panel-sub">按 ▶ 播放。下面 6 步用当前这张图的真实数值逐行演算，样本放完 ⑥ 给出最终概率。</p>
+    <div class="calc-rows">
+      <div class="calc-row"><span class="cno">①</span><code class="cf">px[i] ∈ [0,1] · 784 维</code><span class="cv" id="calc1">—</span></div>
+      <div class="calc-row"><span class="cno">②</span><code class="cf">P = px × 0.6</code><span class="cv" id="calc2">—</span></div>
+      <div class="calc-row"><span class="cno">③</span><code class="cf">V ← 0.94·V + Σ W·spike · V ≥ θ</code><span class="cv" id="calc3">—</span><canvas id="calcSpark" width="160" height="36" class="spark" aria-hidden="true"></canvas></div>
+      <div class="calc-row"><span class="cno">④</span><code class="cf">spikeAccum[j]++ · T = 200</code><span class="cv" id="calc4">—</span></div>
+      <div class="calc-row"><span class="cno">⑤</span><code class="cf">c_d = Σ_{pref[j]=d} spikeAccum[j]</code><span class="cv" id="calc5">—</span></div>
+      <div class="calc-row"><span class="cno">⑥</span><code class="cf">P(d) = c_d / Σ</code><span class="cv" id="calc6">—</span></div>
     </div>
-    <div class="scope-card">
-      <p class="scope-title"><span class="tick">∿</span> 膜电位示波 · 刚放电的神经元</p>
-      <div class="canvas-host"><canvas id="canvasVolt" width="500" height="140" class="line"
-              role="img" aria-label="神经元膜电位随时间变化的示波曲线"></canvas></div>
-      <p class="scope-cap" id="voltLabel">神经元 <b id="voltNeuron">#—</b>：膜电位（青）积分升高，越过阈值（红虚线）就放电并回落到 0。</p>
-    </div>
-  </div>
+  </section>
 
-  <!-- ================= learning ================= -->
-  <div class="learn-panel">
+  <!-- ================= parameter update (STDP ΔW) ================= -->
+  <section class="learn-panel dw-panel" aria-label="参数更新可视化">
     <div class="learn-head">
-      <p class="learn-title">学习 <em>STDP</em> · 神经元自组织</p>
+      <p class="learn-title">参数更新 <em>STDP</em> · 实时 ΔW</p>
       <p class="learn-count">已学习 <b id="learnCount">0</b> / 400 个样本</p>
     </div>
     <div class="learn-body">
@@ -466,74 +410,12 @@
       </div>
       <p class="learn-cap">
         这 100 个神经元从<b>随机噪声</b>出发，仅靠放电时序自组织出偏好——
-        颜色 = 它最常为哪个数字放电。下方是<b>像素 → 概率</b>的计算流程图。
+        颜色 = 它最常为哪个数字放电。<b>闪白</b>的像素 = 本次放电被 <code>+A_PLUS</code> 增强的突触。
       </p>
     </div>
+    <p class="dw-readout" id="dwReadout">播放一轮「学习」，观察权重如何被 STDP 逐次更新。</p>
     <div class="legend" id="legend"></div>
     <div class="prog"><i id="progBar"></i></div>
-  </div>
-
-  <!-- ================= pixel→probability flow ================= -->
-  <section class="flow-panel" aria-label="从图片像素到输出分类概率的计算流程">
-    <p class="flow-title">像素 → 概率：这张图是怎么算出来的</p>
-    <p class="flow-intro">
-      从一张 28×28 灰度图，到 0–9 每个数字的概率：这 6 步就是一次完整的前向计算。
-      每步下方标出它用的公式与常量。
-    </p>
-    <svg class="flow-svg" viewBox="0 0 1120 200" role="img" aria-label="从像素到概率的六步计算流程">
-      <g transform="translate(8,25)">
-        <rect width="165" height="150" rx="10" fill="var(--panel-2)" stroke="var(--rule)"/>
-        <text x="82" y="32" text-anchor="middle" class="flow-node-num">① 输入像素</text>
-        <text x="82" y="62" text-anchor="middle" class="flow-node-title">28×28 灰度图</text>
-        <text x="82" y="88" text-anchor="middle" class="flow-node-title">784 维向量</text>
-        <text x="82" y="124" text-anchor="middle" class="flow-node-math">px[i] ∈ [0,1]</text>
-      </g>
-      <line class="flow-arrow" x1="176" y1="100" x2="191" y2="100"/>
-      <polygon class="flow-arrow" points="195,100 186,95 186,105"/>
-      <g transform="translate(195,25)">
-        <rect width="165" height="150" rx="10" fill="var(--panel-2)" stroke="var(--rule)"/>
-        <text x="82" y="32" text-anchor="middle" class="flow-node-num">② 速率编码</text>
-        <text x="82" y="62" text-anchor="middle" class="flow-node-title">越亮越发脉冲</text>
-        <text x="82" y="88" text-anchor="middle" class="flow-node-title">泊松采样</text>
-        <text x="82" y="124" text-anchor="middle" class="flow-node-math">P = px × 0.6</text>
-      </g>
-      <line class="flow-arrow" x1="363" y1="100" x2="378" y2="100"/>
-      <polygon class="flow-arrow" points="382,100 373,95 373,105"/>
-      <g transform="translate(382,25)">
-        <rect width="165" height="150" rx="10" fill="var(--panel-2)" stroke="var(--rule)"/>
-        <text x="82" y="32" text-anchor="middle" class="flow-node-num">③ 积分放电</text>
-        <text x="82" y="62" text-anchor="middle" class="flow-node-title">加权积分 + 漏电</text>
-        <text x="82" y="88" text-anchor="middle" class="flow-node-title">阈值 + 胜者全取</text>
-        <text x="82" y="124" text-anchor="middle" class="flow-node-math">V += W·spike; V×=0.94</text>
-      </g>
-      <line class="flow-arrow" x1="550" y1="100" x2="565" y2="100"/>
-      <polygon class="flow-arrow" points="569,100 560,95 560,105"/>
-      <g transform="translate(569,25)">
-        <rect width="165" height="150" rx="10" fill="var(--panel-2)" stroke="var(--rule)"/>
-        <text x="82" y="32" text-anchor="middle" class="flow-node-num">④ 放电计数</text>
-        <text x="82" y="62" text-anchor="middle" class="flow-node-title">T = 200 步</text>
-        <text x="82" y="88" text-anchor="middle" class="flow-node-title">每神经元计数</text>
-        <text x="82" y="124" text-anchor="middle" class="flow-node-math">spikeAccum[j]</text>
-      </g>
-      <line class="flow-arrow" x1="737" y1="100" x2="752" y2="100"/>
-      <polygon class="flow-arrow" points="756,100 747,95 747,105"/>
-      <g transform="translate(756,25)">
-        <rect width="165" height="150" rx="10" fill="var(--panel-2)" stroke="var(--rule)"/>
-        <text x="82" y="32" text-anchor="middle" class="flow-node-num">⑤ 按数字分组</text>
-        <text x="82" y="62" text-anchor="middle" class="flow-node-title">神经元 → 偏好</text>
-        <text x="82" y="88" text-anchor="middle" class="flow-node-title">100 → 10 组</text>
-        <text x="82" y="124" text-anchor="middle" class="flow-node-math">pref[j]</text>
-      </g>
-      <line class="flow-arrow" x1="924" y1="100" x2="939" y2="100"/>
-      <polygon class="flow-arrow" points="943,100 934,95 934,105"/>
-      <g transform="translate(943,25)">
-        <rect width="165" height="150" rx="10" fill="var(--panel-2)" stroke="var(--rule)"/>
-        <text x="82" y="32" text-anchor="middle" class="flow-node-num">⑥ 概率分布</text>
-        <text x="82" y="62" text-anchor="middle" class="flow-node-title">0–9 概率条</text>
-        <text x="82" y="88" text-anchor="middle" class="flow-node-title">归一化成概率</text>
-        <text x="82" y="124" text-anchor="middle" class="flow-node-math">P(d) = c_d / Σ</text>
-      </g>
-    </svg>
   </section>
 
   <p class="note">

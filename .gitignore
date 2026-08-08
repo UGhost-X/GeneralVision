@@ -11,3 +11,6 @@ __pycache__/
 
 # Data (downloadable / regenerable)
 data/
+
+# Evolution run artifacts
+checkpoints/
