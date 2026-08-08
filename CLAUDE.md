@@ -5,13 +5,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Workflow
 
 - Git remote: `origin` → `https://github.com/UGhost-X/GeneralVision.git`
+- 默认主分支为 `main`（原 `master` 已合并进 `main` 并删除，远程/本地均不再有 `master`）。所有推送目标均为 `origin main`。
 - **Before modifying any code** (editing, creating, or deleting code files), first commit and push all pending changes to the remote:
   ```bash
   git add -A
   git commit -m "<描述本次改动>"
-  git push origin <branch>
+  git push origin main
   ```
-- 每次修改代码之前，必须先将当前已有的改动提交并推送到远程仓库 `origin`，然后再开始本次修改。
+- 每次修改代码之前，必须先将当前已有的改动提交并推送到远程仓库 `origin` 的 `main` 分支，然后再开始本次修改。
 
 ## Environment
 
