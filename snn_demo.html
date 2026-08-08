@@ -713,8 +713,10 @@ function renderGrid() {
     for (let y = 0; y < 28; y++) for (let x = 0; x < 28; x++) {
       const i = x + y * 28;
       const wv = W[i * N + n] / maxW;               // W stored as [pixel*N + neuron]
+      const f = flash[i * N + n];                   // ΔW highlight: blend toward white
       const o = ((oy + y) * Wg + (ox + x)) * 4;
-      d[o] = c[0] * wv; d[o + 1] = c[1] * wv; d[o + 2] = c[2] * wv; d[o + 3] = 255;
+      d[o] = c[0] * wv + 255 * f; d[o + 1] = c[1] * wv + 255 * f;
+      d[o + 2] = c[2] * wv + 255 * f; d[o + 3] = 255;
     }
   }
   ctx.putImageData(new ImageData(gridTint, Wg, Wg), 0, 0);
@@ -839,6 +841,25 @@ function renderCalcSpark(j) {
     ctx.fillStyle = "#FFB454";
     ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI * 2); ctx.fill();
   }
+}
+
+// ---------- parameter update (ΔW) ----------
+function decayFlash() {
+  for (let p = 0; p < NIN * N; p++) flash[p] *= 0.8;
+}
+function renderDw() {
+  const el = document.getElementById("dwReadout");
+  if (!el) return;
+  if (mode !== "learn") {
+    el.textContent = "学习模式下，放电神经元被增强的突触会闪白。先切到「学习」播放。";
+    return;
+  }
+  if (lastFire < 0) {
+    el.textContent = "播放一轮「学习」，观察权重如何被 STDP 逐次更新。";
+    return;
+  }
+  el.textContent = "刚放电 神经元 #" + lastFire + "（偏好数字 " + pref[lastFire] + "）："
+    + lastLTP + " 个突触 +" + A_PLUS.toFixed(1) + "，整列归一化 ×" + lastNorm.toFixed(2);
 }
 
 function renderStage4() {
