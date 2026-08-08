@@ -473,7 +473,7 @@
     <div class="prog"><i id="progBar"></i></div>
   </div>
 
-  <!-- ================= step-by-step walkthrough ================= -->
+  <!-- ================= pixel→probability flow ================= -->
   <section class="flow-panel" aria-label="从图片像素到输出分类概率的计算流程">
     <p class="flow-title">像素 → 概率：这张图是怎么算出来的</p>
     <p class="flow-intro">
@@ -504,7 +504,7 @@
         <text x="82" y="32" text-anchor="middle" class="flow-node-num">③ 积分放电</text>
         <text x="82" y="62" text-anchor="middle" class="flow-node-title">加权积分 + 漏电</text>
         <text x="82" y="88" text-anchor="middle" class="flow-node-title">阈值 + 胜者全取</text>
-        <text x="82" y="124" text-anchor="middle" class="flow-node-math">V += W·spike</text>
+        <text x="82" y="124" text-anchor="middle" class="flow-node-math">V += W·spike; V×=0.94</text>
       </g>
       <line class="flow-arrow" x1="550" y1="100" x2="565" y2="100"/>
       <polygon class="flow-arrow" points="569,100 560,95 560,105"/>
