@@ -69,6 +69,40 @@ def test_forward_firing_sane():
     assert (rc.sum(axis=0) > 0).sum() >= 2, f"产出层几乎只有单一通道发放: {rc.sum(axis=0)}"
 
 
+def test_day_loop_invariants():
+    eco_ = eco.Ecosystem(seed=0)
+    assert len(eco_.pop) == eco.INIT_POP
+    for day in range(3):
+        events, stats = eco_.step_day()
+        types = [e["type"] for e in events]
+        assert types[0] == "day_begin" and types[-1] == "day_end"
+        assert len(eco_.pop) == eco.POP_CAP, f"day{day} 种群 {len(eco_.pop)}"
+        assert 0.0 <= stats["avg_acc"] <= 1.0
+        assert stats["alive"] == eco.POP_CAP
+        names = {g.name for g in eco_.pop}
+        assert len(names) == eco.POP_CAP, "重名"
+        for e in events:
+            if e["type"] == "org_day":
+                assert len(e["produced"]) == eco.FOOD_COUNT
+                assert len(e["readout_profile"]) == eco.READOUT_SIZE
+            if e["type"] == "birth":
+                assert len(e["parents"]) == 2
+    # 手动喂食
+    best = max(eco_.pop, key=lambda g: eco_.stats_cache.get(g.name, 0))
+    r = eco_.manual_feed(best.name, 3)
+    assert r["label"] == 3 and r["produced"] in list(range(-1, 10))
+    assert len(r["food_pixels"]) == 784 and len(r["readout_counts"]) == 10
+    # 可复现：同 seed 重建，前 2 天轨迹应一致（_day_fingerprint 记录 avg 与种群名）
+    def _run2(seed):
+        e = eco.Ecosystem(seed=seed)
+        out = []
+        for _ in range(2):
+            e.step_day()
+            out.append(e._day_fingerprint())
+        return out
+    assert _run2(9) == _run2(9), "同 seed 应可复现"
+
+
 if __name__ == "__main__":
     for _name, _fn in sorted(globals().items()):
         if _name.startswith("test_") and callable(_fn):

@@ -132,3 +132,138 @@ def forward(genome: Genome, pixels: np.ndarray, rng: np.random.Generator
         refr = np.maximum(refr - 1, 0)
     produced = np.where(rc.sum(axis=1) > 0, rc.argmax(axis=1), -1)
     return produced, hc, rc
+
+
+# ---- 生态主循环（Task 3 追加）----
+from data_loading import load_mnist
+
+
+class Ecosystem:
+    """生态主循环。同 seed 全程可复现（所有随机性来自 self.rng 顺序抽取）。"""
+
+    def __init__(self, seed: int = 0):
+        self.rng = np.random.default_rng(seed)
+        self.counter = 0
+        self.day = 0
+        self.stats_cache: dict[str, float] = {}
+        self._img, self._lbl, _, _ = load_mnist()
+        self.pop: list[Genome] = [
+            random_genome(f"eco#{i}", self.rng) for i in range(INIT_POP)
+        ]
+        self.counter = INIT_POP
+
+    # ---- 内部 ----
+    def _next_name(self) -> str:
+        n = f"eco#{self.counter}"
+        self.counter += 1
+        return n
+
+    def _day_fingerprint(self) -> tuple:
+        return (round(float(np.mean(list(self.stats_cache.values()))), 6),
+                tuple(sorted(g.name for g in self.pop)))
+
+    def step_day(self) -> tuple[list[dict], dict]:
+        events: list[dict] = []
+        food_idx = self.rng.integers(0, len(self._img), FOOD_COUNT)
+        food_lbl = self._lbl[food_idx]
+        events.append({"type": "day_begin", "day": self.day,
+                       "food_idx": food_idx.tolist(),
+                       "food_labels": food_lbl.tolist()})
+
+        accs: dict[str, float] = {}
+        for i, g in enumerate(self.pop):
+            produced, _hc, rc = forward(g, self._img[food_idx],
+                                        np.random.default_rng(self.day * 1_000_003 + i))
+            acc = float((produced == food_lbl).mean())
+            g.age += 1
+            self.stats_cache[g.name] = acc
+            accs[g.name] = acc
+            events.append({"type": "org_day", "name": g.name,
+                           "acc": round(acc, 4),
+                           "produced": produced.tolist(),
+                           "readout_profile": rc.mean(axis=0).round(2).tolist()})
+
+        order = sorted(self.pop, key=lambda g: -accs[g.name])
+        n_survive = max(1, len(order) - round(len(order) * BOTTOM_DEATH))  # 存活顶部 70%
+        bottom = set(id(g) for g in order[n_survive:])                     # 底部 30% 饿死
+        aged = set(id(g) for g in order[:n_survive] if g.age > MAX_AGE)    # 顶部高龄也走
+        survivors = [g for g in self.pop if id(g) not in bottom and id(g) not in aged]
+        for g in self.pop:
+            if id(g) not in bottom and id(g) not in aged:
+                continue
+            events.append({"type": "death", "name": g.name})
+            self.stats_cache.pop(g.name, None)
+
+        need = POP_CAP - len(survivors)
+        if need > 0 and survivors:
+            while len(survivors) < POP_CAP:
+                if len(survivors) >= 2:
+                    # 每轮按当前幸存者重算 roulette 权重（新生儿无当日 acc，权重≈0）
+                    w = np.array([accs.get(g.name, 0.0) + 1e-6 for g in survivors],
+                                 np.float64)
+                    probs = w / w.sum()
+                    p1, p2 = self.rng.choice(len(survivors), 2, replace=False, p=probs)
+                else:
+                    p1 = p2 = 0
+                child = crossover(survivors[p1], survivors[p2], self.rng)
+                child.name = self._next_name()
+                child.born_gen = self.day
+                survivors.append(child)
+                events.append({"type": "birth", "name": child.name,
+                               "parents": [child.parents[0], child.parents[1]],
+                               "gen": child.born_gen})
+        self.pop = survivors
+
+        acc_arr = np.array([accs.get(g.name, 0.0) for g in self.pop], np.float64)
+        stats = {
+            "day": self.day,
+            "alive": len(self.pop),
+            "avg_acc": round(float(acc_arr.mean()), 4),
+            "best_acc": round(float(acc_arr.max()), 4),
+            "best_name": self.pop[int(acc_arr.argmax())].name,
+            "median_acc": round(float(np.median(acc_arr)), 4),
+            "worst_acc": round(float(acc_arr.min()), 4),
+        }
+        events.append({"type": "day_end", "stats": stats})
+        self.day += 1
+        return events, stats
+
+    def get_state(self) -> dict:
+        return {
+            "day": self.day,
+            "config": {"pop_cap": POP_CAP, "food_count": FOOD_COUNT, "T": T,
+                       "max_age": MAX_AGE, "bottom_death": BOTTOM_DEATH,
+                       "mutation_rate": MUT_RATE},
+            "population": [{"name": g.name, "age": g.age, "born_gen": g.born_gen,
+                            "parents": list(g.parents) if g.parents else None,
+                            "alive": True} for g in self.pop],
+            "stats": self._last_stats,
+        }
+
+    def get_digit_image(self, idx: int) -> dict:
+        return {"pixels": self._img[idx].tolist(), "label": int(self._lbl[idx])}
+
+    def manual_feed(self, name: str, digit: int) -> dict:
+        g = next(x for x in self.pop if x.name == name)
+        cand = np.nonzero(self._lbl == digit)[0]
+        idx = int(self.rng.choice(cand))
+        produced, hc, rc = forward(g, self._img[idx][None],
+                                   np.random.default_rng(int(self.rng.integers(0, 2**31))))
+        return {"food_pixels": self._img[idx].tolist(), "label": digit,
+                "produced": int(produced[0]),
+                "correct": bool(produced[0] == digit),
+                "hidden_counts": hc[0].tolist(),
+                "readout_counts": rc[0].tolist()}
+
+    @property
+    def _last_stats(self) -> dict:
+        if not self.pop:
+            return {"day": self.day, "alive": 0, "avg_acc": 0.0, "best_acc": 0.0,
+                    "best_name": "", "median_acc": 0.0, "worst_acc": 0.0}
+        acc_arr = np.array([self.stats_cache.get(g.name, 0.0) for g in self.pop], np.float64)
+        return {"day": self.day, "alive": len(self.pop),
+                "avg_acc": round(float(acc_arr.mean()), 4),
+                "best_acc": round(float(acc_arr.max()), 4),
+                "best_name": self.pop[int(acc_arr.argmax())].name,
+                "median_acc": round(float(np.median(acc_arr)), 4),
+                "worst_acc": round(float(acc_arr.min()), 4)}
