@@ -38,6 +38,14 @@
   #manualResult { margin-top:8px; font-size:13px; }
   #manualResult canvas { image-rendering:pixelated; background:#000; border-radius:4px; }
   .mm { font-size:11px; color:var(--dim); margin-top:6px; }
+  #trace { margin-top:8px; max-height:180px; overflow-y:auto; }
+  #trace .tr { display:flex; gap:8px; align-items:center; padding:2px 0; }
+  @keyframes popin { from { transform:scale(.6); opacity:0; } to { transform:scale(1); opacity:1; } }
+  .card.birth { animation:popin .5s ease; border-color:var(--ok); }
+  .card .big { transition:color .2s; }
+  .card.right .big { color:var(--ok); } .card.wrong .big { color:var(--bad); }
+  @keyframes dieflash { 0%,100% { border-color:var(--line); } 50% { border-color:var(--bad); } }
+  .card.dying { animation:dieflash .6s ease; }
 </style>
 </head>
 <body>
@@ -54,7 +62,7 @@
   <aside id="side">
     <div class="panel"><b>种群统计</b>
       <canvas id="curves"></canvas>
-      <div class="mm" id="curveLegend">蓝=平均吃对率　绿=最优吃对率　灰=存活数</div>
+      <div class="mm" id="curveLegend">蓝=平均吃对率　绿=最优吃对率　灰=存活数（相对种群上限）</div>
     </div>
     <div class="panel"><b>手动喂食</b>
       <div id="manualBtns"></div>
@@ -67,7 +75,9 @@
 "use strict";
 const $ = s => document.querySelector(s);
 const state = { day:0, pop:new Map(), stats:null, auto:true, speed:600,
-                accSeries:[], bestSeries:[], aliveSeries:[] };
+                accSeries:[], bestSeries:[], aliveSeries:[],
+                foodLabels:[], popCap:60, stepping:false,
+                cardEls:new Map(), traceTimer:null };
 
 // ---------- 渲染 ----------
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -89,6 +99,7 @@ function renderCards(){
     c.dataset.name = g.name;
     c.innerHTML = cardHtml(g);
     c.addEventListener("click", () => showAnatomy(g.name));
+    state.cardEls.set(g.name, c);   // 供回放后追加 birth/right/wrong/dying 动画类
     dish.appendChild(c);
   }
 }
@@ -99,15 +110,20 @@ function drawCurves(){
   const H = cv.height = cv.clientHeight * devicePixelRatio;
   ctx.scale(devicePixelRatio, devicePixelRatio); ctx.clearRect(0,0,W,H);
   const n = state.accSeries.length; if (n < 2) return;
-  const plot = (series, color) => {
-    const cw = cv.clientWidth, ch = cv.clientHeight;
+  const cw = cv.clientWidth, ch = cv.clientHeight;
+  const cap = state.popCap || 60;
+  const plot = (series, color, div) => {
     ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
-    series.forEach((v,i) => { const x = i/(n-1)*cw, y = ch - v*ch;
+    series.forEach((v,i) => { const x = i/(n-1)*cw, y = ch - (v/(div||1))*ch;
       i ? ctx.lineTo(x,y) : ctx.moveTo(x,y); });
     ctx.stroke();
   };
-  plot(state.accSeries, "#58a6ff");
-  plot(state.bestSeries, "#3fb950");
+  plot(state.accSeries, "#58a6ff", 1);
+  plot(state.bestSeries, "#3fb950", 1);
+  // 存活数（0~60）与吃对率（0~1）量纲不同：相对种群上限归一，灰色虚线示独立刻度
+  ctx.setLineDash([4,3]); ctx.lineWidth = 1;
+  plot(state.aliveSeries, "#8b949e", cap);
+  ctx.setLineDash([]);
 }
 
 function updateHeader(){
@@ -119,31 +135,56 @@ function updateHeader(){
 }
 
 async function loadState(){
-  const s = await (await fetch("/api/state")).json();
-  state.day = s.day; state.stats = s.stats;
-  for (const p of s.population) state.pop.set(p.name, {...p, acc:0, lastProduced:"·"});
-  renderCards(); drawCurves(); updateHeader();
+  try {
+    const s = await (await fetch("/api/state")).json();
+    state.day = s.day; state.stats = s.stats;
+    state.popCap = (s.config && s.config.pop_cap) || 60;
+    for (const p of s.population) state.pop.set(p.name, {...p, acc:0, lastProduced:"·"});
+    renderCards(); drawCurves(); updateHeader();
+  } catch (err) {
+    console.error("加载失败：", err);
+    $("#statsLabel").innerHTML = `<b style="color:var(--bad)">⚠ 加载失败：${esc(err.message)}</b>`;
+  }
 }
 
 // ---------- 推演 ----------
 async function stepDay(){
-  const r = await (await fetch("/api/step", {method:"POST"})).json();
-  state.day = r.day;
-  replayEvents(r.events, r.stats);
+  if (state.stepping) return;               // 防重入：上一次推演未返回前忽略新的触发
+  state.stepping = true;
+  try {
+    const r = await (await fetch("/api/step", {method:"POST"})).json();
+    state.day = r.day;
+    replayEvents(r.events, r.stats);
+  } catch (err) {
+    console.error("推演失败：", err);
+    $("#statsLabel").innerHTML = `<b style="color:var(--bad)">⚠ 推演失败：${esc(err.message)}</b>`;
+  } finally {
+    state.stepping = false;
+  }
 }
 
 function replayEvents(events, stats){
   state.stats = stats;
+  const born = [], dying = [], flashes = [];
   for (const e of events){
-    if (e.type === "org_day"){
+    if (e.type === "day_begin"){
+      state.foodLabels = e.food_labels; state.day = e.day;
+    } else if (e.type === "org_day"){
       const g = state.pop.get(e.name); if(!g) continue;
       g.acc = e.acc; g.lastProduced = e.produced[0] === -1 ? "?" : e.produced[0];
       g.readoutProfile = e.readout_profile;
+      g.produced = e.produced;                    // 完整吐出序列，供喂食回放
+      g.feedLabels = (state.foodLabels||[]).slice();  // 当日标签快照，防后续天覆盖
+      g.age = (g.age || 0) + 1;                   // 引擎年龄不回传，前端自增保持同步
+      const right = e.produced[0] !== -1 && e.produced[0] === (state.foodLabels ? state.foodLabels[0] : -1);
+      flashes.push({name:e.name, right});
     } else if (e.type === "death"){
       const g = state.pop.get(e.name); if(g) g.alive = false;
+      dying.push(e.name);
     } else if (e.type === "birth"){
       state.pop.set(e.name, {name:e.name, age:0, born_gen:e.gen, parents:e.parents,
                              alive:true, acc:0, lastProduced:"·"});
+      born.push(e.name);
     } else if (e.type === "day_end"){
       state.stats = e.stats;
       state.accSeries.push(e.stats.avg_acc);
@@ -152,6 +193,14 @@ function replayEvents(events, stats){
     }
   }
   renderCards(); drawCurves(); updateHeader();
+  // 事件动画：新卡 popin 放大 → 亡者边框高亮 → 首食 ✓/✗ 一闪（400ms 后移除）
+  for (const nm of born){ const c = state.cardEls.get(nm); if (c) c.classList.add("birth"); }
+  for (const nm of dying){ const c = state.cardEls.get(nm); if (c) c.classList.add("dying"); }
+  for (const f of flashes){
+    const c = state.cardEls.get(f.name);
+    if (c){ c.classList.add(f.right ? "right" : "wrong");
+      setTimeout(() => c.classList.remove("right","wrong"), 400); }
+  }
 }
 
 // ---------- 控制 ----------
@@ -171,13 +220,91 @@ $("#stepBtn").addEventListener("click", () => { state.auto = false;
   $("#playBtn").textContent = "▶ 手动"; stepDay(); });
 $("#speed").addEventListener("input", e => state.speed = +e.target.value);
 
-// ---------- 骨架预留（Task 7 实现）----------
-function showAnatomy(name){ /* Task 7 */ }
+// ---------- 个体解剖（Task 7）----------
+function clearTraceTimer(){ if (state.traceTimer){ clearInterval(state.traceTimer); state.traceTimer = null; } }
+
+function showAnatomy(name){
+  const g = state.pop.get(name); if (!g) return;
+  clearTraceTimer();                        // 切换个体时中止旧回放定时器
+  const box = $("#anatomy");
+  const profile = g.readoutProfile || [];
+  box.innerHTML = `<b>${esc(name)}</b>
+    <div class="mm">父母：${g.parents ? esc(g.parents.join(" × ")) : "（初始个体）"}
+    · 出生第 ${g.born_gen} 天 · 已活 ${g.age} 天 · 今日吃对 ${(g.acc*100).toFixed(0)}%</div>
+    <div style="display:flex;gap:2px;height:70px;align-items:flex-end;margin:8px 0">${
+      profile.map((v,i) =>
+        `<div style="flex:1;background:${v>0?'#58a6ff':'#30363d'};height:${Math.max(1.5, Math.min(100, v*10))}%"
+              title="产出神经元${i} 脉冲${v}"></div>`).join("")}
+    </div>
+    <button class="btn" onclick="playFeedTrace('${esc(name)}')">🎬 回放今日喂食</button>
+    <div id="trace"></div>`;
+}
+
+function playFeedTrace(name){
+  const g = state.pop.get(name); if (!g) return;
+  clearTraceTimer();
+  const labels = g.feedLabels || [];
+  const produced = g.produced || [];
+  const trace = $("#trace");
+  if (!trace) return;
+  trace.innerHTML = "";
+  if (!labels.length || !produced.length){
+    trace.innerHTML = '<span class="mm">（今日无喂食记录）</span>'; return;
+  }
+  const N = Math.min(labels.length, produced.length);
+  const row = i => {
+    const l = labels[i], p = produced[i], ok = p !== -1 && p === l;
+    const r = el("div", "tr");
+    r.innerHTML = `<span class="mm" style="min-width:24px">#${i+1}</span>
+      <span class="mm">吃进 <b>${l}</b></span>
+      <span class="mm">→ 吐出 <b>${p === -1 ? "（没吐出）" : p}</b></span>
+      <b style="color:${ok ? "var(--ok)" : "var(--bad)"}">${ok ? "✓" : "✗"}</b>`;
+    trace.appendChild(r);
+  };
+  row(0);                                    // 先画第一条，再以 300ms 间隔续播
+  let i = 1;
+  state.traceTimer = setInterval(() => {
+    if (!document.body.contains(trace)){ clearTraceTimer(); return; }  // 面板已被切换走
+    if (i >= N){ clearTraceTimer(); return; }
+    row(i); i++;
+  }, 300);
+}
+
+// ---------- 手动喂食（Task 7）----------
+function drawDigit(cv, pixels){
+  const s = 8, ctx = cv.getContext("2d");
+  cv.width = 28*s; cv.height = 28*s; ctx.clearRect(0,0,cv.width,cv.height);
+  for (let y=0;y<28;y++) for (let x=0;x<28;x++){
+    const v = pixels[y*28+x]; ctx.fillStyle = `rgb(${Math.round(v*255)},${Math.round(v*255)},${Math.round(v*255)})`;
+    ctx.fillRect(x*s, y*s, s, s);
+  }
+}
+async function manualFeed(digit){
+  const box = $("#manualResult");
+  try {
+    const r = await (await fetch("/api/manual_feed", {method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify({digit})})).json();
+    if (r.error){ box.innerHTML = `<span class="mm" style="color:var(--bad)">${esc(r.error)}</span>`; return; }
+    const label = r.label, prod = r.produced, ok = r.correct;
+    box.innerHTML = `<canvas></canvas>
+      <div class="mm" style="font-size:16px">喂进 <b>${label}</b> → 吐出 <b>${prod === -1 ? "（没吐出）" : prod}</b>
+      <span style="color:${ok ? "var(--ok)" : "var(--bad)"}">${ok ? "✓" : "✗"}</span></div>`;
+    drawDigit(box.querySelector("canvas"), r.food_pixels);
+  } catch (err) {
+    console.error("手动喂食失败：", err);
+    box.innerHTML = `<span class="mm" style="color:var(--bad)">⚠ 手动喂食失败：${esc(err.message)}</span>`;
+  }
+}
 
 (async function init(){
   $("#dayLabel").textContent = "加载中…";
+  for (let d=0; d<10; d++){                 // 生成 0-9 手动喂食按钮
+    const b = el("button", "feedbtn", String(d));
+    b.addEventListener("click", () => manualFeed(d));
+    $("#manualBtns").appendChild(b);
+  }
   await loadState();
-  requestAnimationFrame(autoLoop);
+  if (state.stats) requestAnimationFrame(autoLoop);   // 加载失败则不启动自动推演
 })();
 </script>
 </body>
