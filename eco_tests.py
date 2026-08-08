@@ -73,38 +73,69 @@ def test_forward_firing_sane():
     assert (rc.sum(axis=0) > 0).sum() >= 2, f"产出层几乎只有单一通道发放: {rc.sum(axis=0)}"
 
 
-def test_day_loop_invariants():
+def test_round_loop_invariants():
     eco_ = eco.Ecosystem(seed=0)
     assert len(eco_.pop) == eco.INIT_POP
-    for day in range(3):
-        events, stats = eco_.step_day()
+    for _round in range(4):
+        events, stats = eco_.step_round()
         types = [e["type"] for e in events]
-        assert types[0] == "day_begin" and types[-1] == "day_end"
-        assert len(eco_.pop) == eco.POP_CAP, f"day{day} 种群 {len(eco_.pop)}"
+        assert types[0] == "round_begin" and types[-1] == "round_end"
+        assert len(eco_.pop) <= eco_.capacity, f"round{_round} 种群 {len(eco_.pop)} 超承载力"
         assert 0.0 <= stats["avg_acc"] <= 1.0
-        assert stats["alive"] == eco.POP_CAP
+        assert 0.0 <= stats["natural_rate"] <= 1.0
         names = {g.name for g in eco_.pop}
-        assert len(names) == eco.POP_CAP, "重名"
+        assert len(names) == len(eco_.pop), "重名"
         for e in events:
-            if e["type"] == "org_day":
-                assert len(e["produced"]) == eco.FOOD_COUNT
-                assert len(e["readout_profile"]) == eco.READOUT_SIZE
+            if e["type"] == "org_round":
+                assert "produced" in e and "correct" in e and "age" in e
+            if e["type"] == "death":
+                assert e["cause"] in ("natural", "unnatural")
             if e["type"] == "birth":
                 assert len(e["parents"]) == 2
     # 手动喂食
-    best = max(eco_.pop, key=lambda g: eco_.stats_cache.get(g.name, 0))
-    r = eco_.manual_feed(best.name, 3)
+    g0 = eco_.pop[0]
+    r = eco_.manual_feed(g0.name, 3)
     assert r["label"] == 3 and r["produced"] in list(range(-1, 10))
     assert len(r["food_pixels"]) == 784 and len(r["readout_counts"]) == 10
-    # 可复现：同 seed 重建，前 2 天轨迹应一致（_day_fingerprint 记录 avg 与种群名）
+    # 可复现
     def _run2(seed):
         e = eco.Ecosystem(seed=seed)
         out = []
         for _ in range(2):
-            e.step_day()
-            out.append(e._day_fingerprint())
+            e.step_round()
+            out.append(e._round_fingerprint())
         return out
     assert _run2(9) == _run2(9), "同 seed 应可复现"
+
+def test_round_never_exceeds_capacity():
+    """多回合后种群应 ≤ 承载力（密度依赖 + 硬上限）。"""
+    e = eco.Ecosystem(seed=1)
+    for _ in range(8):
+        e.step_round()
+        assert len(e.pop) <= e.capacity, f"种群 {len(e.pop)} > 承载力 {e.capacity}"
+    assert e.total_deaths > 0, "应有死亡记录"
+    assert len(e.pop) >= 1, "不应灭绝到 0（全灭重播应恢复）"
+
+def test_weighted_crossover():
+    """存活加权交叉：weight_a 越大，后代越接近 a。"""
+    rng = np.random.default_rng(7)
+    a = eco.random_genome("a", rng)
+    b = eco.random_genome("b", rng)
+    child_50 = eco.crossover(a, b, np.random.default_rng(8), weight_a=1, weight_b=1)
+    close50 = (np.abs(child_50.hidden - a.hidden) < np.abs(child_50.hidden - b.hidden)).mean()
+    assert 0.35 < close50 < 0.65, close50
+    child_90 = eco.crossover(a, b, np.random.default_rng(8), weight_a=9, weight_b=1)
+    close90 = (np.abs(child_90.hidden - a.hidden) < np.abs(child_90.hidden - b.hidden)).mean()
+    assert close90 > 0.75, f"weight_a=9 应显著偏向 a: {close90}"
+
+def test_death_cause():
+    """死亡分类：错→unnatural；对但超龄→natural；对且未超龄→存活。"""
+    g = eco.random_genome("d", np.random.default_rng(0))
+    assert eco.death_cause(g, False, 20) == "unnatural"
+    g2 = eco.random_genome("d2", np.random.default_rng(1)); g2.age = 20
+    assert eco.death_cause(g2, True, 20) == "natural"
+    g3 = eco.random_genome("d3", np.random.default_rng(2)); g3.age = 1
+    assert eco.death_cause(g3, True, 20) is None
 
 
 def test_server_endpoints():
@@ -121,12 +152,12 @@ def test_server_endpoints():
     base = f"http://127.0.0.1:{port}"
     try:
         s = json.load(urllib.request.urlopen(base + "/api/state"))
-        assert s["config"]["pop_cap"] == eco.POP_CAP
+        assert s["config"]["survival_rounds"] == eco.SURVIVAL_ROUNDS
         assert len(s["population"]) == eco.INIT_POP
         req = urllib.request.Request(base + "/api/step", method="POST")
         r = json.load(urllib.request.urlopen(req))
-        assert r["stats"]["alive"] == eco.POP_CAP
-        assert r["events"][0]["type"] == "day_begin"
+        assert r["stats"]["alive"] <= eco.CAPACITY
+        assert r["events"][0]["type"] == "round_begin"
         img = json.load(urllib.request.urlopen(base + "/api/digit_image/0"))
         assert len(img["pixels"]) == 784
         body = json.dumps({"digit": 4, "name": s["population"][0]["name"]}).encode()
