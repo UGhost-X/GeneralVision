@@ -79,3 +79,55 @@ def crossover(a: Genome, b: Genome, rng: np.random.Generator) -> Genome:
 
     return Genome(name="child", hidden=hidden, readout=readout,
                   parents=(a.name, b.name))
+
+
+def forward(genome: Genome, pixels: np.ndarray, rng: np.random.Generator
+            ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """pixels: (B,784) ∈[0,1]。返回 (produced, hidden_counts, readout_counts)。
+
+    泊松编码 → 隐藏层 LIF+WTA（无 STDP、无 homeostasis，纯放电）→ 产出层 LIF。
+    produced = 产出层累计发放最多的数字；-1 表示整场未发放。
+    逐样本重置 V/refr，与 snn.py step() 语义一致。
+    """
+    B = pixels.shape[0]
+    S = (rng.random((B, 784, T)) < (pixels[:, :, None] * SPIKE_GAIN)).astype(np.float32)
+    Vh = np.zeros((B, HIDDEN_SIZE), np.float32)
+    refh = np.zeros((B, HIDDEN_SIZE), np.int32)
+    Vr = np.zeros((B, READOUT_SIZE), np.float32)
+    refr = np.zeros((B, READOUT_SIZE), np.int32)
+    hc = np.zeros((B, HIDDEN_SIZE), np.int64)
+    rc = np.zeros((B, READOUT_SIZE), np.int64)
+    Wh, Wr = genome.hidden, genome.readout
+    for t in range(T):
+        # ---- 隐藏层 ----
+        Vh += S[:, :, t] @ Wh
+        Vh[refh > 0] = 0.0
+        Vh *= LEAK
+        elig = (refh <= 0) & (Vh >= THETA_HIDDEN)
+        fire_rows = np.nonzero(elig.any(axis=1))[0]
+        hspk = np.zeros((B, HIDDEN_SIZE), np.float32)
+        if fire_rows.size:
+            win = np.where(elig, Vh, -np.inf).argmax(axis=1)[fire_rows]
+            Vh[fire_rows] = 0.0
+            was_idle = refh[fire_rows] <= 0
+            refh[fire_rows] = np.where(was_idle, 1, refh[fire_rows])
+            refh[fire_rows, win] = REF_PERIOD
+            hspk[fire_rows, win] = 1.0
+            hc[fire_rows, win] += 1
+        refh = np.maximum(refh - 1, 0)
+        # ---- 产出层 ----
+        Vr += hspk @ Wr
+        Vr[refr > 0] = 0.0
+        Vr *= LEAK
+        eligr = (refr <= 0) & (Vr >= THETA_READOUT)
+        fire_r = np.nonzero(eligr.any(axis=1))[0]
+        if fire_r.size:
+            winr = np.where(eligr, Vr, -np.inf).argmax(axis=1)[fire_r]
+            Vr[fire_r] = 0.0
+            was_idle_r = refr[fire_r] <= 0
+            refr[fire_r] = np.where(was_idle_r, 1, refr[fire_r])
+            refr[fire_r, winr] = REF_PERIOD
+            rc[fire_r, winr] += 1
+        refr = np.maximum(refr - 1, 0)
+    produced = np.where(rc.sum(axis=1) > 0, rc.argmax(axis=1), -1)
+    return produced, hc, rc

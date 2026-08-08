@@ -43,6 +43,31 @@ def test_genome_serialize():
     s = json.dumps(d)
     assert "hidden" in s and "readout" in s
 
+def test_forward_shapes_and_deterministic():
+    rng = np.random.default_rng(5)
+    g = eco.random_genome("f", rng)
+    pix = np.zeros((3, 784), np.float32); pix[0, 200:250] = 1.0
+    produced, hc, rc = eco.forward(g, pix, np.random.default_rng(5))
+    assert produced.shape == (3,) and hc.shape == (3, 100) and rc.shape == (3, 10)
+    assert produced.dtype == np.int64 and hc.dtype == np.int64
+    produced2, _, _ = eco.forward(g, pix, np.random.default_rng(5))
+    assert np.array_equal(produced, produced2), "同 seed 应可复现"
+
+def test_forward_firing_sane():
+    """对随机 digit 批次：隐藏层应发放（非全零）、产出不应过于集中/未发放过多。"""
+    from data_loading import load_mnist
+    ti, tl, _, _ = load_mnist()
+    rng = np.random.default_rng(1)
+    g = eco.random_genome("f2", rng)
+    idx = rng.integers(0, len(ti), 40)
+    produced, hc, rc = eco.forward(g, ti[idx], np.random.default_rng(2))
+    assert hc.sum() > 0, "隐藏层整场无发放——动力学哑了"
+    none_frac = float((produced == -1).mean())
+    assert none_frac < 0.7, f"产出层未发放比例过高 {none_frac:.2f}"
+    real = produced[produced != -1]
+    assert len(np.unique(real)) >= 3, f"产出数字过于集中: {np.unique(real)}"
+    assert (rc.sum(axis=0) > 0).sum() >= 2, f"产出层几乎只有单一通道发放: {rc.sum(axis=0)}"
+
 
 if __name__ == "__main__":
     for _name, _fn in sorted(globals().items()):
