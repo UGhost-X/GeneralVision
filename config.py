@@ -27,7 +27,7 @@ class EvolutionConfig:
     val_size: int = 1000
     device: str = "cpu"
     seed: int = 0
-    checkpoint_every: int = 5    # 每 N 代存检查点
+    checkpoint_every: int = 2    # 每 N 代存检查点（防崩溃丢进度）
     checkpoint_dir: str = "checkpoints"
     log_every: int = 1
     is_smoke: bool = False       # 冒烟模式：个体一生训练样本缩减

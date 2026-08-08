@@ -45,9 +45,10 @@ def tournament_select(fitness: list[float], survivors: list[int], n_breeders: in
     breeders: list[int] = []
     for _ in range(n_breeders):
         if rng.random() < roulette_frac:
-            # 轮盘赌：按适应度在幸存者中的排名加权
-            ranks = np.argsort(np.argsort([fitness[i] for i in survivors]))  # 0..M-1 排名
-            probs = (ranks + 1) / ranks.sum()
+            # 轮盘赌：按适应度在幸存者中的排名加权（rank 0 = 最差，权重随 rank 递增）
+            ranks = np.argsort(np.argsort([fitness[i] for i in survivors]))
+            weights = ranks + 1
+            probs = weights / weights.sum()
             idx = rng.choice(len(survivors), p=probs)
             breeders.append(survivors[int(idx)])
         else:
