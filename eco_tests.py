@@ -160,7 +160,9 @@ def test_server_endpoints():
         assert r["events"][0]["type"] == "round_begin"
         img = json.load(urllib.request.urlopen(base + "/api/digit_image/0"))
         assert len(img["pixels"]) == 784
-        body = json.dumps({"digit": 4, "name": s["population"][0]["name"]}).encode()
+        # 回合制下大部分个体当回合死亡，喂食目标须取推演后的存活者
+        s2 = json.load(urllib.request.urlopen(base + "/api/state"))
+        body = json.dumps({"digit": 4, "name": s2["population"][0]["name"]}).encode()
         rq = urllib.request.Request(base + "/api/manual_feed", data=body, method="POST",
                                     headers={"Content-Type": "application/json"})
         mf = json.load(urllib.request.urlopen(rq))

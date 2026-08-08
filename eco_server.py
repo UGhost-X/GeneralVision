@@ -68,8 +68,8 @@ class EcoHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/api/step":
             with self.lock:
-                events, stats = self.engine.step_day()
-            self._json({"day": stats["day"], "events": events, "stats": stats})
+                events, stats = self.engine.step_round()
+            self._json({"round": stats["round"], "events": events, "stats": stats})
         elif self.path == "/api/manual_feed":
             body = self._read_body()
             if body is None:
