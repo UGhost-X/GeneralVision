@@ -78,12 +78,21 @@ def evolve(cfg: EvolutionConfig) -> dict:
         t_gen = time.time()
         results = []
         for i, g in enumerate(pop):
-            fit, metrics = evaluate(g, tr_img, tr_lbl, val_img, val_lbl, device,
-                                    w_sparse=cfg.w_sparse, w_compact=cfg.w_compact)
-            results.append((fit, metrics, g))
+            # 多次不同初始化种子评估取平均，抑制权重初始化的随机噪声
+            best_fit_rep, best_metrics_rep = None, None
+            fit_scores = []
+            for rep in range(cfg.eval_repeats):
+                g_rep = g.clone()
+                g_rep.seed = g.seed + rep * 7919
+                fit, metrics = evaluate(g_rep, tr_img, tr_lbl, val_img, val_lbl, device,
+                                        w_sparse=cfg.w_sparse, w_compact=cfg.w_compact)
+                fit_scores.append(fit)
+                if best_fit_rep is None or fit > best_fit_rep:
+                    best_fit_rep, best_metrics_rep = fit, metrics
+            results.append((float(np.mean(fit_scores)), best_metrics_rep, g))
             if cfg.log_every and gen % cfg.log_every == 0:
-                print(f"  ind {i}: fit={fit:.3f} acc={metrics['accuracy']:.3f} "
-                      f"{g.describe()}")
+                print(f"  ind {i}: fit={np.mean(fit_scores):.3f} "
+                      f"acc={best_metrics_rep['accuracy']:.3f} {g.describe()}")
 
         results.sort(key=lambda r: r[0], reverse=True)
         fits = [r[0] for r in results]

@@ -21,6 +21,7 @@ class EvolutionConfig:
     # 适应度
     w_sparse: float = 0.05       # 稀疏奖励权重
     w_compact: float = 0.01      # 紧凑惩罚权重
+    eval_repeats: int = 1        # 监督读出已稳定；如需更强抑噪可设 2
 
     # 数据/运行
     val_size: int = 1000
@@ -41,4 +42,5 @@ class EvolutionConfig:
             c.device = "cpu"
             c.patience = 100
             c.is_smoke = True
+            c.eval_repeats = 1
         return c
