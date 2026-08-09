@@ -88,7 +88,7 @@ Standalone script that batch-compresses images > 2MB in a hardcoded target direc
 
 ### 关键常量（eco_engine.py 顶部）
 
-`T=40`（仿真步数）、`INPUT_SAMPLES_PER_STEP=12`（每步采样的像素数）、`HIDDEN_SIZE=100`、`LEAK=0.94`、`THETA_HIDDEN=12.0`、`WTA_K=6`（每层 top-k 脉冲数）、`SURVIVAL_ROUNDS=20`（自然寿命）、`N_REPRO=50`（繁殖倍数）、`ASSORT_STRENGTH=0.5`（选型强度默认）、`CAPACITY=10000`（承载力）、`INIT_POP=1000`（初始/重播种群）、`SELECT_PER_DIGIT=100`（每个数字筛出的初始个体数）、`SCREEN_POOL_SIZE=2000`（全数字筛候选池）、`SCREEN_STEPS=8`、`SCREEN_SAMPLES=4`、`SCREEN_READOUT_SAMPLES_PER_DIGIT=1`、`CENSUS_EVERY_ROUNDS=5`、`CENSUS_REFIT_TOP=200`、`CENSUS_READOUT_SAMPLES_PER_DIGIT=5`、`READOUT_LAMBDA=0.1`、`FITNESS_LAMBDA=0.5`、`P_READOUT_MUTATION=0.30`、`P_READOUT_SPARSE_RESET=0.05`、`TRAIT_MUTATION_RATE=0.25`、`P_STRUCT_MUTATION=0.45`、`WTA_K_MIN=1`、`WTA_K_MAX=12`、`LEAK_MIN=0.80`、`LEAK_MAX=0.99`、`INPUT_GAIN_MIN=0.5`、`INPUT_GAIN_MAX=3.0`、`THETA_SCALE_MIN=0.5`、`THETA_SCALE_MAX=2.0`、`REPRO_SUCCESS_BASE=0.9`、`REPRO_WRONG_PENALTY=0.4`、`NO_REPRO_DEATH_ROUNDS=3`、`REPRO_GROWTH_DIVISOR=30`、`DENSITY_FLOOR=0.05`、`POP_GROWTH=0.10`（每回合净增长率，密度加权）；产错不立即死亡，结构突变概率 `P_GROW=0.40 / P_SPLIT=0.15 / P_MERGE=0.10 / P_PRUNE=0.10 / P_ADDRANDOM=0.03`，层数 1-4、每层 20-200、总隐藏 ≤400。
+`T=40`（仿真步数）、`INPUT_SAMPLES_PER_STEP=12`（每步采样的像素数）、`HIDDEN_SIZE=100`、`LEAK=0.94`、`THETA_HIDDEN=12.0`、`WTA_K=6`（每层 top-k 脉冲数）、`SURVIVAL_ROUNDS=20`（自然寿命）、`N_REPRO=50`（繁殖倍数）、`ASSORT_STRENGTH=0.5`（选型强度默认）、`CAPACITY=10000`（承载力）、`INIT_POP=1000`（初始/重播种群）、`SELECT_PER_DIGIT=100`（每个数字筛出的初始个体数）、`SCREEN_POOL_SIZE=2000`（全数字筛候选池）、`SCREEN_STEPS=8`、`SCREEN_SAMPLES=4`、`SCREEN_READOUT_SAMPLES_PER_DIGIT=1`、`CENSUS_EVERY_ROUNDS=5`、`CENSUS_REFIT_TOP=120`、`CENSUS_ELITE=60`、`CENSUS_ELITE_ROUNDS=2`、`CENSUS_DIGIT_SAMPLES=3`、`CENSUS_STEPS=24`、`CENSUS_READOUT_SAMPLES_PER_DIGIT=5`、`CENSUS_WEAK_BOOST=4`、`READOUT_LAMBDA=0.1`、`FITNESS_LAMBDA=0.5`、`COVERAGE_LAMBDA=0.35`、`P_READOUT_MUTATION=0.30`、`P_READOUT_SPARSE_RESET=0.05`、`TRAIT_MUTATION_RATE=0.25`、`P_STRUCT_MUTATION=0.45`、`WTA_K_MIN=1`、`WTA_K_MAX=12`、`LEAK_MIN=0.80`、`LEAK_MAX=0.99`、`INPUT_GAIN_MIN=0.5`、`INPUT_GAIN_MAX=3.0`、`THETA_SCALE_MIN=0.5`、`THETA_SCALE_MAX=2.0`、`REPRO_SUCCESS_BASE=0.9`、`REPRO_WRONG_PENALTY=0.4`、`NO_REPRO_DEATH_ROUNDS=3`、`REPRO_GROWTH_DIVISOR=30`、`DENSITY_FLOOR=0.05`、`POP_GROWTH=0.10`（每回合净增长率，密度加权）；产错不立即死亡，结构突变概率 `P_GROW=0.40 / P_SPLIT=0.15 / P_MERGE=0.10 / P_PRUNE=0.10 / P_ADDRANDOM=0.03`，层数 1-4、每层 20-200、总隐藏 ≤400。
 
 ### 最近更新（2026-08-09）
 
@@ -103,6 +103,7 @@ Standalone script that batch-compresses images > 2MB in a hardcoded target direc
 - 新增遗传性状与变异：`longevity_bonus`（寿命）、`fecundity`（繁殖力）、`wrong_tolerance`（错误耐受）、`mutation_rate`（变异率）；同架构交叉时可整段交换读出层，读出走小扰动/稀疏重置变异，前端解剖面板已展示这些性状。
 - 已加入全数字定期体检与读出层重拟合：每 5 回合喂 0-9 更新每个体的 `fitness`，对 top 200 个体用每数字 5 个训练样本重拟合读出层；fitness 会进入配对、繁殖成功率和产仔权重，同架构交叉默认继承高 fitness 亲本的读出层。
 - 已加入可遗传、可变异的神经元结构基因：`wta_k`（每层 top-k 脉冲数）、`leak`（膜电位漏电率）、`input_gain`（输入增益）、`threshold_scale`（发放阈值缩放）；这些基因会参与前向计算，随交叉遗传，并由 `P_STRUCT_MUTATION` 驱动结构变异，前端解剖面板可查看。
+- 泛化繁殖已增强：体检改为每个数字多个样本，fitness 使用硬准确率 + softmax 置信度 + 数字覆盖度；对种群最弱的数字定向增加读出训练样本；配对奖励高 fitness 和互补数字覆盖；体检 top 个体获得精英保护，短回合内不会被未繁殖死亡淘汰。
 
 
 

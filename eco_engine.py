@@ -6,7 +6,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from numba import njit
@@ -55,13 +55,19 @@ CAPACITY = 10000
 INIT_POP = 1000
 SELECT_PER_DIGIT = 100
 FITNESS_LAMBDA = 0.5
+COVERAGE_LAMBDA = 0.35
 SCREEN_POOL_SIZE = 2000
 SCREEN_STEPS = 8
 SCREEN_SAMPLES = 4
 SCREEN_READOUT_SAMPLES_PER_DIGIT = 1
 CENSUS_EVERY_ROUNDS = 5
-CENSUS_REFIT_TOP = 200
+CENSUS_REFIT_TOP = 120
+CENSUS_ELITE = 60
+CENSUS_ELITE_ROUNDS = 2
+CENSUS_DIGIT_SAMPLES = 3
+CENSUS_STEPS = 24
 CENSUS_READOUT_SAMPLES_PER_DIGIT = 5
+CENSUS_WEAK_BOOST = 4
 READOUT_LAMBDA = 0.1
 P_READOUT_MUTATION = 0.30
 P_READOUT_SPARSE_RESET = 0.05
@@ -675,10 +681,10 @@ def crossover(
             float((donor.fecundity + other.fecundity) / 2.0),
             float((donor.wrong_tolerance + other.wrong_tolerance) / 2.0),
             float((donor.mutation_rate + other.mutation_rate) / 2.0),
-            int(donor.wta_k),
-            float(donor.leak),
-            float(donor.input_gain),
-            float(donor.threshold_scale),
+            int(donor.wta_k if rng.random() < 0.5 else other.wta_k),
+            float((donor.leak + other.leak) / 2.0),
+            float((donor.input_gain + other.input_gain) / 2.0),
+            float((donor.threshold_scale + other.threshold_scale) / 2.0),
         ),
         rng,
     )
@@ -1189,6 +1195,7 @@ class Organism:
     last_digit: int = -1
     digit_preference: int = -1
     failed_repro_rounds: int = 0
+    elite_rounds: int = 0
     fitness: float = 0.0
     digit_accuracies: List[float] = field(default_factory=list)
 
@@ -1205,6 +1212,7 @@ class Organism:
             "last_digit": self.last_digit,
             "digit_preference": self.digit_preference,
             "failed_repro_rounds": self.failed_repro_rounds,
+            "elite_rounds": self.elite_rounds,
             "layer_sizes": list(self.genome.layer_sizes),
             "weights_size": int(self.genome.weights.size),
             "longevity_bonus": self.genome.longevity_bonus,
@@ -1309,17 +1317,74 @@ class Ecosystem:
     def _fitness_from_accuracy(self, accuracy: np.ndarray) -> np.ndarray:
         mean_accuracy = accuracy.mean(axis=1)
         worst_digit = accuracy.min(axis=1)
-        return mean_accuracy + FITNESS_LAMBDA * worst_digit
+        coverage = (accuracy > 0.0).mean(axis=1)
+        return (
+            mean_accuracy
+            + FITNESS_LAMBDA * worst_digit
+            + COVERAGE_LAMBDA * coverage
+        )
+
+    def _fitness_from_confidence(self, confidence: np.ndarray) -> np.ndarray:
+        mean_confidence = confidence.mean(axis=1)
+        worst_digit = confidence.min(axis=1)
+        coverage = (confidence > 0.11).mean(axis=1)
+        return (
+            mean_confidence
+            + FITNESS_LAMBDA * worst_digit
+            + COVERAGE_LAMBDA * coverage
+        )
+
+    def _confidence_digits(
+        self,
+        genomes: Sequence[Genome],
+        spikes_cache: Dict[
+            int,
+            Union[
+                Tuple[np.ndarray, np.ndarray],
+                List[Tuple[np.ndarray, np.ndarray]],
+            ],
+        ],
+    ) -> np.ndarray:
+        confidence = np.zeros((len(genomes), 10), dtype=np.float32)
+        for digit, spikes in spikes_cache.items():
+            if isinstance(spikes, tuple):
+                _, rates = forward(genomes, spikes)
+                confidence[:, digit] = rates[:, digit]
+            else:
+                for sample_spikes in spikes:
+                    _, rates = forward(genomes, sample_spikes)
+                    confidence[:, digit] += rates[:, digit]
+                confidence[:, digit] /= max(1, len(spikes))
+        return confidence
 
     def _score_digits(
         self,
         genomes: Sequence[Genome],
-        spikes_cache: Dict[int, Tuple[np.ndarray, np.ndarray]],
+        spikes_cache: Dict[
+            int,
+            Union[
+                Tuple[np.ndarray, np.ndarray],
+                List[Tuple[np.ndarray, np.ndarray]],
+            ],
+        ],
     ) -> np.ndarray:
         accuracy = np.zeros((len(genomes), 10), dtype=np.float32)
         for digit, spikes in spikes_cache.items():
-            predictions, _ = forward(genomes, spikes)
-            accuracy[:, digit] = (predictions == digit).astype(np.float32)
+            if isinstance(spikes, tuple):
+                predictions, _ = forward(genomes, spikes)
+                accuracy[:, digit] = (
+                    predictions == digit
+                ).astype(np.float32)
+            else:
+                correct = np.zeros(
+                    (len(genomes), len(spikes)), dtype=np.bool_
+                )
+                for sample_idx, sample_spikes in enumerate(spikes):
+                    predictions, _ = forward(genomes, sample_spikes)
+                    correct[:, sample_idx] = predictions == digit
+                accuracy[:, digit] = correct.mean(axis=1).astype(
+                    np.float32
+                )
         return accuracy
 
     def _run_census(self) -> Dict[str, object]:
@@ -1332,36 +1397,66 @@ class Ecosystem:
                 "best_fitness": 0.0,
             }
 
-        foods = [self._pick_food(digit) for digit in range(10)]
         spikes_cache = {
-            digit: _sample_spikes(
-                np.asarray(food["image"], dtype=np.float32),
-                self.rng,
-            )
-            for digit, food in enumerate(foods)
+            digit: [
+                _sample_spikes(
+                    np.asarray(
+                        self._pick_food(digit)["image"],
+                        dtype=np.float32,
+                    ),
+                    self.rng,
+                    steps=CENSUS_STEPS,
+                )
+                for _ in range(CENSUS_DIGIT_SAMPLES)
+            ]
+            for digit in range(10)
         }
         genomes = [organism.genome for organism in alive]
         accuracy = self._score_digits(genomes, spikes_cache)
-        fitness = self._fitness_from_accuracy(accuracy)
+        confidence = self._confidence_digits(genomes, spikes_cache)
+        accuracy_fitness = self._fitness_from_accuracy(accuracy)
+        confidence_fitness = self._fitness_from_confidence(confidence)
+        fitness = 0.6 * accuracy_fitness + 0.4 * confidence_fitness
+        mean_digit_confidence = confidence.mean(axis=0)
+        weak_digits = np.argsort(mean_digit_confidence)[:3].astype(int)
         for i, organism in enumerate(alive):
             organism.fitness = float(fitness[i])
             organism.digit_accuracies = [
                 float(value) for value in accuracy[i]
             ]
 
-        order = np.argsort(-fitness)
+        refit_score = (
+            0.5 * fitness
+            + 0.3 * confidence.min(axis=1)
+            + 0.2 * accuracy.min(axis=1)
+        )
+        order = np.argsort(-refit_score)
         top_count = min(CENSUS_REFIT_TOP, len(alive))
         top_indices = order[:top_count]
         top_organisms = [alive[int(i)] for i in top_indices]
+        for i, organism in enumerate(top_organisms[:CENSUS_ELITE]):
+            organism.elite_rounds = CENSUS_ELITE_ROUNDS
         self._fit_readouts(
             [organism.genome for organism in top_organisms],
             samples_per_digit=CENSUS_READOUT_SAMPLES_PER_DIGIT,
+            weak_digits=weak_digits,
         )
         top_accuracy = self._score_digits(
             [organism.genome for organism in top_organisms],
             spikes_cache,
         )
-        top_fitness = self._fitness_from_accuracy(top_accuracy)
+        top_confidence = self._confidence_digits(
+            [organism.genome for organism in top_organisms],
+            spikes_cache,
+        )
+        top_accuracy_fitness = self._fitness_from_accuracy(top_accuracy)
+        top_confidence_fitness = self._fitness_from_confidence(
+            top_confidence
+        )
+        top_fitness = (
+            0.6 * top_accuracy_fitness
+            + 0.4 * top_confidence_fitness
+        )
         for i, organism in enumerate(top_organisms):
             organism.fitness = float(top_fitness[i])
             organism.digit_accuracies = [
@@ -1380,6 +1475,7 @@ class Ecosystem:
         self,
         genomes: Sequence[Genome],
         samples_per_digit: Optional[int] = None,
+        weak_digits: Optional[Sequence[int]] = None,
     ) -> None:
         if not genomes:
             return
@@ -1390,11 +1486,18 @@ class Ecosystem:
         )
         sample_indices: List[int] = []
         sample_labels: List[int] = []
+        weak_set = set(
+            int(digit)
+            for digit in (weak_digits if weak_digits is not None else [])
+        )
         for digit in range(10):
             candidates = np.flatnonzero(self._train_labels == digit)
+            per_digit_count = per_digit
+            if digit in weak_set:
+                per_digit_count += CENSUS_WEAK_BOOST
             chosen = self.rng.choice(
                 candidates,
-                size=min(per_digit, len(candidates)),
+                size=min(per_digit_count, len(candidates)),
                 replace=False,
             )
             sample_indices.extend(int(i) for i in chosen)
@@ -1554,11 +1657,21 @@ class Ecosystem:
         rng.shuffle(remaining)
         pairs: List[Tuple[Organism, Organism]] = []
         max_age = max(1.0, float(max((o.age for o in remaining), default=1)))
-        fitness_values = [o.fitness for o in remaining]
-        fitness_range = max(1.0, float(max(fitness_values) - min(fitness_values)))
 
         while len(remaining) >= 2:
-            first = remaining.pop(0)
+            first_probs = np.asarray(
+                [
+                    0.3
+                    + max(0.0, o.fitness)
+                    + (1.5 if o.elite_rounds > 0 else 0.0)
+                    for o in remaining
+                ],
+                dtype=np.float64,
+            )
+            first_probs /= first_probs.sum()
+            first = remaining.pop(
+                int(rng.choice(len(remaining), p=first_probs))
+            )
             if not remaining:
                 break
             scores = []
@@ -1569,11 +1682,30 @@ class Ecosystem:
                     if first.digit_preference == second.digit_preference
                     else 1.0
                 )
-                fitness_sim = 1.0 - abs(first.fitness - second.fitness) / fitness_range
+                mean_fitness = min(
+                    1.0,
+                    max(0.0, 0.5 * (first.fitness + second.fitness)),
+                )
+                first_acc = np.asarray(
+                    first.digit_accuracies or [], dtype=np.float32
+                )
+                second_acc = np.asarray(
+                    second.digit_accuracies or [], dtype=np.float32
+                )
+                weak_overlap = 0.0
+                strong_both = 0.5
+                if first_acc.size == 10 and second_acc.size == 10:
+                    weak_overlap = float(
+                        ((first_acc < 0.5) & (second_acc < 0.5)).mean()
+                    )
+                    strong_both = float(
+                        ((first_acc >= 0.5) & (second_acc >= 0.5)).mean()
+                    )
                 mate_score = (
-                    0.35 * age_sim
-                    + 0.35 * digit_bonus
-                    + 0.30 * fitness_sim
+                    0.30 * age_sim
+                    + 0.25 * digit_bonus
+                    + 0.25 * mean_fitness
+                    + 0.20 * (strong_both - weak_overlap)
                 )
                 score = (1.0 - strength) * rng.random() + strength * mate_score
                 scores.append(max(score, 1e-6))
@@ -1616,6 +1748,23 @@ class Ecosystem:
             )
             mean_fitness = 0.5 * (first.fitness + second.fitness)
             fitness_factor = 0.75 + 0.25 * min(1.0, max(0.0, mean_fitness))
+            first_acc = np.asarray(
+                first.digit_accuracies or [], dtype=np.float32
+            )
+            second_acc = np.asarray(
+                second.digit_accuracies or [], dtype=np.float32
+            )
+            weak_fraction = (
+                float((first_acc < 0.5).mean())
+                if first_acc.size
+                else 0.0
+            )
+            weak_fraction += (
+                float((second_acc < 0.5).mean())
+                if second_acc.size
+                else 0.0
+            )
+            weak_factor = 1.0 - 0.5 * weak_fraction
             raw_weights.append(
                 max(
                     1,
@@ -1626,6 +1775,7 @@ class Ecosystem:
                         * density_factor
                         * fecundity
                         * fitness_factor
+                        * weak_factor
                     ),
                 )
             )
@@ -1807,7 +1957,9 @@ class Ecosystem:
                     organism.failed_repro_rounds += 1
 
         for organism in survivors:
-            if organism.failed_repro_rounds >= NO_REPRO_DEATH_ROUNDS:
+            if organism.elite_rounds > 0:
+                organism.elite_rounds -= 1
+            elif organism.failed_repro_rounds >= NO_REPRO_DEATH_ROUNDS:
                 self._kill(organism, "no_repro")
                 no_repro_deaths.append(organism)
 
