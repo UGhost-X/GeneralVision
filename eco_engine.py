@@ -86,6 +86,11 @@ READOUT_LR_MIN, READOUT_LR_MAX = 0.0, 1.0
 HIDDEN_PLASTICITY_MIN, HIDDEN_PLASTICITY_MAX = 0.0, 1.0
 PLASTICITY_DRIFT_MIN, PLASTICITY_DRIFT_MAX = 0.0, 0.5
 
+# 投喂频率：周期块中每个数字(0-9)出现的次数权重（默认等频，每块 0-9 各 1 次）
+# 每回合按 _food_queue 弹出一个数字，块用完后按权重重新生成并洗牌，保证
+# 每个数字按固定重复频率出现，避免纯随机的扎堆/久不出现。
+DIGIT_FREQUENCIES = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
 MAX_WEIGHTS = (
     (INPUT_SIZE + 1) * MAX_HIDDEN_SIZE
     + (MAX_HIDDEN_SIZE + 1) * MAX_HIDDEN_SIZE
@@ -1457,6 +1462,7 @@ class Ecosystem:
         self.cumulative_total_deaths = 0
         self.resets = 0
         self.stopped = False
+        self._food_queue: List[int] = []
         self.history: Dict[str, List[object]] = {
             "round": [],
             "alive": [],
@@ -1865,16 +1871,31 @@ class Ecosystem:
         self._fit_readouts([genome for genome, _ in selected])
         return selected
 
+    def _next_food_digit(self) -> int:
+        """按 DIGIT_FREQUENCIES 从周期块弹出下一个投喂数字。
+
+        块耗尽时按权重重新生成并洗牌，保证每个数字按固定重复频率出现，
+        避免纯随机的扎堆/久不出现。
+        """
+        if not self._food_queue:
+            digits: List[int] = []
+            for digit, weight in enumerate(DIGIT_FREQUENCIES):
+                digits.extend([digit] * int(round(weight)))
+            if not digits:
+                digits = list(range(10))
+            self.rng.shuffle(digits)
+            self._food_queue = digits
+        return self._food_queue.pop()
+
     def _pick_food(self, digit: Optional[int] = None) -> Dict[str, object]:
         if digit is None:
+            digit = self._next_food_digit()
+        label = int(digit) % 10
+        candidates = np.flatnonzero(self._test_labels == label)
+        if len(candidates) == 0:
             index = int(self.rng.integers(len(self._test_images)))
         else:
-            label = int(digit) % 10
-            candidates = np.flatnonzero(self._test_labels == label)
-            if len(candidates) == 0:
-                index = int(self.rng.integers(len(self._test_images)))
-            else:
-                index = int(candidates[self.rng.integers(len(candidates))])
+            index = int(candidates[self.rng.integers(len(candidates))])
         label = int(self._test_labels[index])
         return {
             "index": index,
