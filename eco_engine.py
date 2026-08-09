@@ -99,34 +99,155 @@ def random_genome(name: str, rng: np.random.Generator, gen: int = 0) -> Genome:
 
 def crossover(a: Genome, b: Genome, rng: np.random.Generator,
               weight_a: float = 1.0, weight_b: float = 1.0) -> Genome:
-    """有性繁殖：逐层逐权重以 pa 取 a（存活时长加权）+ 均匀小扰动 + 千分之一大突变。
+    """有性繁殖（纯重组，结构突变由 _apply_structure 单独施加）。
 
-    默认 weight_a=weight_b → 50/50；weight_a 越大后代越偏 a（活越久的个体基因占比越大）。
-    扰动用均匀分布（rng.uniform(-σ,σ)）：同为"小扰动"，比正态快 ~4×。
-    当前版本：双亲同构时逐层混合；形状不兼容的层取 a 的原层（架构继承完整逻辑见结构突变层）。
+    架构继承：存活更长者（weight 更大）提供子代架构；同寿掷硬币。
+    权重混合：仅当另一亲代同位置层形状兼容才做逐权重 pa 取 a + 均匀小扰动 + 千分之一大突变；
+    不兼容层取架构父原层（形状确定，绝无维度错配）。readout 同理。
     """
-    wsum = weight_a + weight_b
-    pa = weight_a / wsum if wsum > 0 else 0.5
+    if weight_a > weight_b:
+        arch_parent, other = a, b
+    elif weight_b > weight_a:
+        arch_parent, other = b, a
+    else:
+        arch_parent, other = (a, b) if rng.random() < 0.5 else (b, a)
+    pa = weight_a / (weight_a + weight_b) if (weight_a + weight_b) > 0 else 0.5
+
     layers = []
-    for i, Wa in enumerate(a.layers):
-        Wb = b.layers[i] if i < len(b.layers) else None
-        if Wb is not None and Wa.shape == Wb.shape:
-            Wc = np.where(rng.random(Wa.shape) < pa, Wa, Wb)
+    for i, W in enumerate(arch_parent.layers):
+        oW = other.layers[i] if i < len(other.layers) else None
+        if oW is not None and oW.shape == W.shape:
+            Wc = np.where(rng.random(W.shape) < pa, W, oW)
             Wc += rng.uniform(-CROSS_SIGMA, CROSS_SIGMA, Wc.shape)
             m = rng.random(Wc.shape) < MUT_RATE
             Wc[m] = rng.uniform(-W_INIT_RANGE, W_INIT_RANGE, int(m.sum()))
             layers.append(_normalize_cols(Wc, W_NORM_HIDDEN))
         else:
-            layers.append(Wa.copy())          # 形状不兼容 → 取 a 原层
+            layers.append(W.copy())              # 形状不兼容 → 架构父原层
 
-    readout = np.where(rng.random(a.readout.shape) < pa, a.readout, b.readout)
-    readout += rng.uniform(-CROSS_SIGMA, CROSS_SIGMA, readout.shape)
-    mr = rng.random(readout.shape) < MUT_RATE
-    readout[mr] = rng.uniform(-W_INIT_RANGE, W_INIT_RANGE, int(mr.sum()))
-    readout = _normalize_cols(readout, W_NORM_READOUT)
+    if other.readout.shape == arch_parent.readout.shape:
+        readout = np.where(rng.random(arch_parent.readout.shape) < pa,
+                           arch_parent.readout, other.readout)
+        readout += rng.uniform(-CROSS_SIGMA, CROSS_SIGMA, readout.shape)
+        mr = rng.random(readout.shape) < MUT_RATE
+        readout[mr] = rng.uniform(-W_INIT_RANGE, W_INIT_RANGE, int(mr.sum()))
+        readout = _normalize_cols(readout, W_NORM_READOUT)
+    else:
+        readout = arch_parent.readout.copy()
 
     return Genome(name="child", layers=layers, readout=readout,
                   parents=(a.name, b.name))
+
+
+# ---- 结构突变（多层架构：五类保函数突变 + 边界钳制） ----
+P_GROW = 0.40            # ① 静默神经元诞生（近零起始，行为不变）
+P_SPLIT = 0.15           # ② 层复制/恒等中继插入（透明）
+P_MERGE = 0.10           # ③ 层合并（权重复合）
+P_PRUNE = 0.10           # ④ 神经元剪枝（删不发火/幅值最小者）
+P_ADDRANDOM = 0.03       # ⑤ 随机整层插入（大跳变，最稀有）
+_SILENT_RANGE = 0.02     # 静默神经元初始权重幅度（近零，不归一化）
+
+
+def _total_hidden(g: Genome) -> int:
+    return sum(g.arch())
+
+
+def _grow(g: Genome, rng: np.random.Generator) -> Genome:
+    """① 静默神经元诞生：某层扩 +d 列（近零），下一层/readout 扩 +d 行。行为近似不变。"""
+    if _total_hidden(g) >= MAX_HIDDEN:
+        return g
+    idx = int(rng.integers(0, len(g.layers)))
+    n_out = g.layers[idx].shape[1]
+    d = int(rng.integers(1, min(20, MAX_NEURONS - n_out) + 1))
+    if d <= 0:
+        return g
+    w_new = rng.uniform(-_SILENT_RANGE, _SILENT_RANGE, (g.layers[idx].shape[0], d))
+    g.layers[idx] = np.concatenate([g.layers[idx], w_new], axis=1)
+    if idx + 1 < len(g.layers):
+        nxt = g.layers[idx + 1]
+        r_new = rng.uniform(-_SILENT_RANGE, _SILENT_RANGE, (d, nxt.shape[1]))
+        g.layers[idx + 1] = np.concatenate([nxt, r_new], axis=0)
+    else:
+        g.readout = np.concatenate([g.readout, rng.uniform(-_SILENT_RANGE, _SILENT_RANGE, (d, g.readout.shape[1]))], axis=0)
+    return g
+
+
+def _split(g: Genome, rng: np.random.Generator) -> Genome:
+    """② 层复制/恒等中继：某层后插入 (n_out→n_out) 恒等层（对角归一化到 W_NORM_HIDDEN → 透明中继）。"""
+    if len(g.layers) >= MAX_LAYERS or _total_hidden(g) >= MAX_HIDDEN:
+        return g
+    idx = int(rng.integers(0, len(g.layers)))
+    n_out = g.layers[idx].shape[1]
+    W2 = np.eye(n_out, dtype=np.float64) + rng.uniform(-0.05, 0.05, (n_out, n_out))
+    W2 = _normalize_cols(W2, W_NORM_HIDDEN)      # 对角≈16 → 单脉冲可达阈值 → 中继透明
+    g.layers.insert(idx + 1, W2)
+    return g
+
+
+def _merge(g: Genome, rng: np.random.Generator) -> Genome:
+    """③ 层合并：相邻 W1(a→b)、W2(b→c) 合成 W=W2@W1(a→c)，删中间 LIF。"""
+    if len(g.layers) < 2:
+        return g
+    idx = int(rng.integers(0, len(g.layers) - 1))
+    W1, W2 = g.layers[idx], g.layers[idx + 1]
+    W = W1 @ W2          # 组合：(a→b) 后接 (b→c) ⇒ a→c（x@W1 再 x@W2 = x@(W1@W2)）
+    if W.shape[1] > MAX_NEURONS or _total_hidden(g) - W1.shape[1] > MAX_HIDDEN:
+        return g                              # 合并可能增大末层宽/总神经元 → 钳制
+    g.layers[idx:idx + 2] = [_normalize_cols(W, W_NORM_HIDDEN)]
+    return g
+
+
+def _prune(g: Genome, rng: np.random.Generator) -> Genome:
+    """④ 神经元剪枝：删某层 L2 范数最小的 d 列 + 下一层对应行（压缩，常有益）。"""
+    idx = int(rng.integers(0, len(g.layers)))
+    n_out = g.layers[idx].shape[1]
+    if n_out <= MIN_NEURONS:
+        return g
+    d = int(rng.integers(1, min(5, n_out - MIN_NEURONS) + 1))
+    col_norms = np.linalg.norm(g.layers[idx], axis=0)
+    drop = np.argsort(col_norms)[:d]
+    keep = np.setdiff1d(np.arange(n_out), drop)
+    g.layers[idx] = g.layers[idx][:, keep]
+    if idx + 1 < len(g.layers):
+        # [keep, :] 可能产生非 C 连续数组（numba typed.List 元素必须 C 布局）
+        g.layers[idx + 1] = np.ascontiguousarray(g.layers[idx + 1][keep, :])
+    else:
+        g.readout = np.ascontiguousarray(g.readout[keep, :])
+    return g
+
+
+def _add_random(g: Genome, rng: np.random.Generator) -> Genome:
+    """⑤ 随机整层插入：尾部新增随机隐藏层 (n_k→n_out) + 重初始化 readout（大跳变）。"""
+    if len(g.layers) >= MAX_LAYERS or _total_hidden(g) >= MAX_HIDDEN:
+        return g
+    n_in = g.layers[-1].shape[1]
+    n_out = int(rng.integers(MIN_NEURONS, MAX_NEURONS + 1))
+    if _total_hidden(g) + n_out > MAX_HIDDEN:
+        n_out = MAX_HIDDEN - _total_hidden(g)
+    if n_out < MIN_NEURONS:
+        return g
+    new_layer = _random_weights(n_in, n_out, W_NORM_HIDDEN, rng)
+    g.layers.append(new_layer)
+    g.readout = _random_weights(n_out, READOUT_SIZE, W_NORM_READOUT, rng)
+    return g
+
+
+def _apply_structure(g: Genome, rng: np.random.Generator, force: str | None = None) -> Genome:
+    """施加结构突变（五类，按概率独立判定；force 用于测试强制指定类型）。"""
+    if force is not None:
+        return {"grow": _grow, "split": _split, "merge": _merge,
+                "prune": _prune, "add_random": _add_random}[force](g, rng)
+    if rng.random() < P_GROW:
+        g = _grow(g, rng)
+    if rng.random() < P_SPLIT:
+        g = _split(g, rng)
+    if rng.random() < P_MERGE:
+        g = _merge(g, rng)
+    if rng.random() < P_PRUNE:
+        g = _prune(g, rng)
+    if rng.random() < P_ADDRANDOM:
+        g = _add_random(g, rng)
+    return g
 
 
 def survival_alpha(n_survivors: int, n_start: int) -> float:
@@ -296,7 +417,7 @@ def forward_from_S(genome: Genome, S: np.ndarray
 
     与 forward 等价，只是脉冲由调用方一次生成。S:(B,784,T) float32。
     """
-    layers = numba.typed.List(genome.layers)
+    layers = numba.typed.List([np.ascontiguousarray(W) for W in genome.layers])
     max_n = max(W.shape[1] for W in genome.layers)
     produced, cnt, rc = _forward_core_multi(S, layers, genome.readout, max_n,
                                             LEAK, THETA_HIDDEN, THETA_READOUT, REF_PERIOD, T)
@@ -345,6 +466,13 @@ class Ecosystem:
             self.capacity = int(kw["capacity"])
         if "initial_pop" in kw and 60 <= kw["initial_pop"] <= 1000:
             self.initial_pop = int(kw["initial_pop"])
+            # v3：无强制回填下种群 ≈ 初始种群规模，改动直接增补/截断当前种群
+            cur = len(self.pop)
+            if cur < self.initial_pop:
+                for _ in range(self.initial_pop - cur):
+                    self.pop.append(random_genome(self._next_name(), self.rng, gen=self.round))
+            elif cur > self.initial_pop:
+                self.pop = self.pop[: self.initial_pop]
         if "assort_strength" in kw and 0.0 <= kw["assort_strength"] <= 1.0:
             self.assort_strength = float(kw["assort_strength"])
         return self._config()
@@ -422,7 +550,9 @@ class Ecosystem:
             target = min(room, len(pairs) * brood)
             for k in range(target):
                 a, b = pairs[k % len(pairs)]
-                child = crossover(a, b, self.rng, weight_a=float(a.age), weight_b=float(b.age))
+                child = _apply_structure(crossover(a, b, self.rng,
+                                                   weight_a=float(a.age), weight_b=float(b.age)),
+                                         self.rng)
                 child.name = self._next_name()
                 child.born_gen = self.round
                 births.append(child)
