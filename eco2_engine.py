@@ -1,0 +1,213 @@
+"""eco2_engine.py — eco2 能量生态游戏批量仿真引擎（torch + spikingjelly 原语）。
+
+个体用 mSTDP 奖励调制在运行中学习读出层；能量经济定生死；拉马克混合遗传。
+详细设计见 docs/superpowers/specs/2026-08-09-eco2-design.md（本地，gitignored）。
+"""
+import math
+import os
+import struct
+import sys
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import torch
+
+try:
+    from spikingjelly.activation_based import functional as sjf
+except ImportError:
+    _sj = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spikingjelly")
+    sys.path.insert(0, _sj)
+    for _m in list(sys.modules):
+        if _m == "spikingjelly" or _m.startswith("spikingjelly."):
+            sys.modules.pop(_m, None)
+    from spikingjelly.activation_based import functional as sjf
+
+
+# --------------------------------------------------------------------------- #
+# 数据
+# --------------------------------------------------------------------------- #
+def load_mnist(root: str = "data/MNIST/raw") -> Tuple[np.ndarray, np.ndarray]:
+    with open(os.path.join(root, "train-images-idx3-ubyte"), "rb") as f:
+        buf = f.read()
+    _, n, rows, cols = struct.unpack(">IIII", buf[:16])
+    imgs = np.frombuffer(buf[16:], dtype=np.uint8).reshape(n, rows, cols)
+    imgs = imgs.astype(np.float32) / 255.0
+    with open(os.path.join(root, "train-labels-idx1-ubyte"), "rb") as f:
+        buf = f.read()
+    _, n = struct.unpack(">II", buf[:8])
+    labs = np.frombuffer(buf[8:], dtype=np.uint8)
+    return imgs, labs
+
+
+def downsample(imgs: np.ndarray, size: int = 14) -> np.ndarray:
+    """28x28 -> size×size 平均池化并 flatten。imgs: [N,28,28] -> [N, size*size]"""
+    n = imgs.shape[0]
+    step = 28 // size
+    x = imgs.reshape(n, size, step, size, step).mean(axis=(2, 4))
+    return x.reshape(n, size * size).astype(np.float32)
+
+
+# --------------------------------------------------------------------------- #
+# 基因
+# --------------------------------------------------------------------------- #
+@dataclass
+class Genome:
+    layer_sizes: Tuple[int, ...] = (64,)
+    wta_k: int = 6
+    leak: float = 0.94
+    input_gain: float = 1.0
+    threshold_scale: float = 1.0
+    lamarckism: float = 0.5
+    lr_scale: float = 1.0
+    fecundity: int = 1
+    mutation_rate: float = 0.1
+
+    def to_dict(self) -> dict:
+        return {
+            "layer_sizes": list(self.layer_sizes), "wta_k": self.wta_k,
+            "leak": self.leak, "input_gain": self.input_gain,
+            "threshold_scale": self.threshold_scale, "lamarckism": self.lamarckism,
+            "lr_scale": self.lr_scale, "fecundity": self.fecundity,
+            "mutation_rate": self.mutation_rate,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Genome":
+        d = dict(d)
+        d["layer_sizes"] = tuple(d["layer_sizes"])
+        return cls(**d)
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+
+def random_genome(rng: np.random.Generator) -> Genome:
+    n_layers = int(rng.integers(1, 4))
+    return Genome(
+        layer_sizes=tuple(int(rng.integers(32, 129)) for _ in range(n_layers)),
+        wta_k=int(rng.integers(2, 13)),
+        leak=float(rng.uniform(0.80, 0.99)),
+        input_gain=float(rng.uniform(0.5, 3.0)),
+        threshold_scale=float(rng.uniform(0.5, 2.0)),
+        lamarckism=float(rng.uniform(0.0, 1.0)),
+        lr_scale=float(rng.uniform(0.5, 2.0)),
+        fecundity=int(rng.integers(1, 4)),
+        mutation_rate=float(rng.uniform(0.02, 0.2)),
+    )
+
+
+def mutate_genome(g: Genome, rng: np.random.Generator) -> Genome:
+    """生态基因高斯扰动 + 结构基因偶发扰动，全部钳制在范围内。"""
+    n = rng.normal(0, 1)
+    layer_sizes = tuple(
+        _clamp(int(s * (1.0 + 0.1 * n)), 32, 128) for s in g.layer_sizes
+    )
+    # 偶发增删层
+    if rng.random() < 0.05 and len(layer_sizes) < 3:
+        layer_sizes = tuple(sorted((*layer_sizes, int(rng.integers(32, 129)))))
+    if rng.random() < 0.05 and len(layer_sizes) > 1:
+        layer_sizes = layer_sizes[:-1]
+    return Genome(
+        layer_sizes=layer_sizes,
+        wta_k=int(_clamp(int(g.wta_k + round(rng.normal(0, 1))), 2, 12)),
+        leak=float(_clamp(g.leak + rng.normal(0, 0.01), 0.80, 0.99)),
+        input_gain=float(_clamp(g.input_gain * (1 + rng.normal(0, 0.1)), 0.5, 3.0)),
+        threshold_scale=float(_clamp(g.threshold_scale * (1 + rng.normal(0, 0.1)), 0.5, 2.0)),
+        lamarckism=float(_clamp(g.lamarckism + rng.normal(0, 0.05), 0.0, 1.0)),
+        lr_scale=float(_clamp(g.lr_scale * (1 + rng.normal(0, 0.1)), 0.5, 2.0)),
+        fecundity=int(_clamp(int(g.fecundity + round(rng.normal(0, 0.3))), 1, 3)),
+        mutation_rate=float(_clamp(g.mutation_rate * (1 + rng.normal(0, 0.1)), 0.02, 0.2)),
+    )
+
+
+def init_weights(genome: Genome, in_size: int, rng: np.random.Generator,
+                 scale: float = 0.15) -> List[torch.Tensor]:
+    """每层 [out,in] + 读出 [10,last]，小随机（无学习部分为‘先天连接’）。"""
+    sizes = [in_size] + list(genome.layer_sizes) + [10]
+    ws: List[torch.Tensor] = []
+    for i in range(len(sizes) - 1):
+        w = (rng.normal(size=(sizes[i + 1], sizes[i])).astype(np.float32) * scale)
+        ws.append(torch.from_numpy(w))
+    return ws
+
+
+# --------------------------------------------------------------------------- #
+# 配置
+# --------------------------------------------------------------------------- #
+@dataclass
+class Eco2Config:
+    init_pop: int = 10000
+    capacity: int = 20000
+    max_rounds: int = 2000
+    seed: int = 0
+    # 能量经济
+    e0: float = 100.0
+    e_gain: float = 10.0
+    e_cost: float = 8.0
+    metabolism: float = 1.0
+    repro_threshold: float = 200.0
+    repro_cost: float = 100.0
+    e_birth: float = 80.0
+    age_max: Optional[int] = None
+    # 学习
+    T: int = 16
+    tau_pre: float = 20.0
+    tau_post: float = 20.0
+    lr_base: float = 0.01
+    w_min: float = -2.0
+    w_max: float = 2.0
+    learn_hidden: bool = False
+    hidden_learn_factor: float = 0.5
+    eligibility_decay: float = 0.95
+    # 输入
+    downsample_size: int = 14
+    w_init_scale: float = 0.15
+    mutation_noise: float = 0.05
+    # 结束 / 采样
+    goal: Optional[dict] = None
+    on_extinction: str = "reseed"
+    sample_every: int = 10
+    # 奠基筛选
+    founder_candidates: int = 20000
+    founder_screen_digits: int = 4
+    # 场景事件（Task 6 用）
+    events: List["Event"] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        d = {k: v for k, v in self.__dict__.items()}
+        d["events"] = [e.to_dict() for e in d["events"]]
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Eco2Config":
+        from eco2_engine import Event
+        d = dict(d)
+        d["events"] = [Event.from_dict(e) for e in d.get("events", [])]
+        return cls(**d)
+
+
+# --------------------------------------------------------------------------- #
+# 个体
+# --------------------------------------------------------------------------- #
+@dataclass
+class Organism:
+    uid: int
+    genome: Genome
+    energy: float = 100.0
+    age: int = 0
+    alive: bool = True
+    weights: Optional[List[torch.Tensor]] = None
+    correct: bool = False
+    prediction: int = -1
+    digit_counts: np.ndarray = field(default_factory=lambda: np.zeros(10, np.int32))
+
+    def to_dict(self) -> dict:
+        return {
+            "uid": self.uid, "age": self.age, "energy": round(float(self.energy), 1),
+            "alive": self.alive, "correct": self.correct,
+            "prediction": self.prediction,
+            "genome": self.genome.to_dict(),
+            "digit_counts": self.digit_counts.tolist(),
+        }
