@@ -473,6 +473,13 @@ class Ecosystem:
                     self.pop.append(random_genome(self._next_name(), self.rng, gen=self.round))
             elif cur > self.initial_pop:
                 self.pop = self.pop[: self.initial_pop]
+            # v3：无强制回填下种群 ≈ 初始种群规模，改动直接增补/截断当前种群
+            cur = len(self.pop)
+            if cur < self.initial_pop:
+                for _ in range(self.initial_pop - cur):
+                    self.pop.append(random_genome(self._next_name(), self.rng, gen=self.round))
+            elif cur > self.initial_pop:
+                self.pop = self.pop[: self.initial_pop]
         if "assort_strength" in kw and 0.0 <= kw["assort_strength"] <= 1.0:
             self.assort_strength = float(kw["assort_strength"])
         return self._config()
