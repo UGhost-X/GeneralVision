@@ -87,3 +87,39 @@ def test_shims_match_genotype_when_unlearned(eco):
     p2, r2, _ = forward_learn(shims, spikes)
     assert np.array_equal(p1, p2)
     assert np.allclose(r1, r2)
+
+
+def test_online_learning_changes_readout(eco):
+    eco.reset()
+    for o in eco.population:
+        o.genome.readout_lr = 0.5
+    alive = [o for o in eco.population if o.alive][:20]
+    before = [o.learned_weights.copy() for o in alive]
+    spikes = _sample_spikes(
+        np.asarray(eco._test_images[0], np.float32), eco.rng
+    )
+    shims = _phenotype_genomes(alive)
+    _, rates, hidden_rates = forward_learn(shims, spikes)
+    label = int(eco._test_labels[0])
+    eco._learn_readout(alive, hidden_rates, rates, label)
+    for i, o in enumerate(alive):
+        assert not np.allclose(before[i], o.learned_weights)
+        assert o.samples_learned == 1
+
+
+def test_zero_readout_lr_skips_learning(eco):
+    eco.reset()
+    for o in eco.population:
+        o.genome.readout_lr = 0.0
+    alive = [o for o in eco.population if o.alive][:20]
+    before = [o.learned_weights.copy() for o in alive]
+    spikes = _sample_spikes(
+        np.asarray(eco._test_images[0], np.float32), eco.rng
+    )
+    shims = _phenotype_genomes(alive)
+    _, rates, hidden_rates = forward_learn(shims, spikes)
+    label = int(eco._test_labels[0])
+    eco._learn_readout(alive, hidden_rates, rates, label)
+    for i, o in enumerate(alive):
+        assert np.allclose(before[i], o.learned_weights)
+        assert o.samples_learned == 0

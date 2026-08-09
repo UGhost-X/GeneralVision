@@ -1246,6 +1246,7 @@ class EcoConfig:
     density_floor: float = DENSITY_FLOOR
     pop_growth: float = POP_GROWTH
     feed_interval: float = 5.0
+    learning_on: bool = True
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -1257,6 +1258,7 @@ class EcoConfig:
             "density_floor": self.density_floor,
             "pop_growth": self.pop_growth,
             "feed_interval": self.feed_interval,
+            "learning_on": self.learning_on,
         }
 
     def update(self, values: Dict[str, object]) -> None:
@@ -1286,6 +1288,8 @@ class EcoConfig:
             self.feed_interval = float(
                 min(10.0, max(1.0, float(values["feed_interval"])))
             )
+        if "learning_on" in values:
+            self.learning_on = bool(values["learning_on"])
 
 
 @dataclass
@@ -1549,6 +1553,41 @@ class Ecosystem:
                     np.float32
                 )
         return accuracy
+
+    def _learn_readout(
+        self,
+        organisms: Sequence[Organism],
+        hidden_rates: Sequence[np.ndarray],
+        rates: np.ndarray,
+        label: int,
+    ) -> None:
+        """在线监督 delta rule：局部更新每个体的读出层表型权重。
+
+        每个输出神经元只用自身误差(rates-onehot)与其输入活动(hidden_rate)，
+        严格局部；更新后按 plasticity_drift 向基因型漂移（遗忘/稳态）。
+        """
+        target = np.zeros(10, dtype=np.float32)
+        target[label] = 1.0
+        for i, organism in enumerate(organisms):
+            g = organism.genome
+            lr = g.readout_lr * READOUT_LR_SCALE
+            learned = organism.learned_weights
+            if lr <= 0.0 or learned is None:
+                continue
+            err = rates[i] - target
+            offset = _output_offset(g.layer_sizes)
+            last_n = g.layer_sizes[-1]
+            readout = learned[offset : offset + last_n * 10].reshape(
+                last_n, 10
+            )
+            readout -= lr * np.outer(hidden_rates[i], err)
+            learned[offset + last_n * 10 : offset + last_n * 10 + 10] -= (
+                lr * err
+            )
+            drift = g.plasticity_drift
+            if drift > 0.0:
+                learned += drift * (g.weights - learned)
+            organism.samples_learned += 1
 
     def _run_census(self) -> Dict[str, object]:
         alive = [o for o in self.population if o.alive]
@@ -2029,10 +2068,16 @@ class Ecosystem:
             organism.correct = bool(predictions[idx] == label)
             organism.prediction = int(predictions[idx])
             organism.last_digit = label
+            organism.acc_ema = (
+                0.9 * organism.acc_ema + 0.1 * float(organism.correct)
+            )
             organism.age += 1
             lifespan = self.config.survival_rounds + organism.genome.longevity_bonus
             if organism.age >= lifespan:
                 self._kill(organism, "natural")
+
+        if self.config.learning_on:
+            self._learn_readout(alive_before, hidden_rates, rates, label)
 
         survivors = [o for o in alive_before if o.alive]
         natural_deaths = [
