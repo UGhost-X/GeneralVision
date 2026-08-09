@@ -80,7 +80,7 @@
 <main>
   <div>
     <canvas id="dish"></canvas>
-    <div class="dishlegend">点击色块查看个体 · 绿=本回合吃对 · 红=本回合吃错 · 灰蓝=存活待喂 · 死亡个体回合末即移除（不留灰块）</div>
+    <div class="dishlegend">点击色块查看个体 · 绿=本回合吃对 · 红=本回合吃错 · 灰蓝=存活待喂 · 暗红=吃错淘汰 · 暗金=自然老死 · 死亡回合末即移除</div>
   </div>
   <aside id="side">
     <div class="panel"><b>环境参数</b>
@@ -90,10 +90,10 @@
         <input type="range" id="c_nrepro" min="10" max="100" value="50"></div>
       <div class="cfgrow"><label>选型强度 s <span id="v_assort">50</span></label>
         <input type="range" id="c_assort" min="0" max="100" step="5" value="50"></div>
-      <div class="cfgrow"><label>承载力 <span id="v_capacity">500</span></label>
-        <input type="range" id="c_capacity" min="100" max="5000" step="100" value="500"></div>
-      <div class="cfgrow"><label>初始种群 <span id="v_initial">60</span></label>
-        <input type="range" id="c_initial" min="60" max="1000" step="10" value="60"></div>
+      <div class="cfgrow"><label>承载力 <span id="v_capacity">10000</span></label>
+        <input type="range" id="c_capacity" min="100" max="10000" step="100" value="10000"></div>
+      <div class="cfgrow"><label>初始种群 <span id="v_initial">1000</span></label>
+        <input type="range" id="c_initial" min="60" max="1000" step="10" value="1000"></div>
       <div class="mm">改动即时生效；初始种群仅在全灭重播时使用。</div>
     </div>
     <div class="panel"><b>种群统计</b>
@@ -189,7 +189,7 @@ function drawCurves(){
   };
   plot(state.correctSeries, "#58a6ff");                          // 蓝=正确率 0-1
   plot(state.naturalSeries, "#bc8cff");                          // 紫=自然死亡率 0-1
-  const cap = (state.config && state.config.capacity) || 500;    // 绿=种群/承载力
+  const cap = (state.config && state.config.capacity) || 10000;    // 绿=种群/承载力
   plot(state.popSeries.map(v => v/cap), "#3fb950");
 }
 
@@ -251,7 +251,8 @@ function drawDish(){
     const name = dishNames[i], g = state.pop.get(name);
     const col = i % cols, row = (i/cols)|0;
     const x = ox + col*(cell+gap), y = oy + row*(cell+gap);
-    ctx.fillStyle = g.dead ? "#262c35"                       // 死亡：短暂变暗后即移除
+    ctx.fillStyle = g.dead
+      ? (g.deadCause === "natural" ? "#7a6a2f" : "#7a1f1f")  // 死亡分色：暗金=自然老死 / 暗红=吃错淘汰
       : g.status === "correct" ? "#3fb950"
       : g.status === "wrong" ? "#f85149"
       : "#7c8aa0";                                          // 灰蓝=存活待喂
@@ -366,7 +367,7 @@ async function replayEvents(events, stats){
     else if (e.type === "round_end") rEnd = e;
   }
 
-  // ---- 1. 食物：显示数字，复位对错色 ----
+  // ---- 1. 刷新展示：食物数字 + 复位对错色 ----
   if (food){
     state.round = food.round;
     state.foodLabel = food.food_label;
@@ -375,6 +376,7 @@ async function replayEvents(events, stats){
       drawDigitCanvas($("#foodDigit"), d.pixels, 2);
     } catch (_e) { /* 取图失败仅显示标签 */ }
     $("#foodLabel").textContent = "食: " + food.food_label;
+    tip(`🍽 第 ${food.round} 回合：食物数字 ${food.food_label}`);
     for (const g of state.pop.values()) g.status = "idle";
     updateHeader();
     drawDish();
@@ -398,28 +400,39 @@ async function replayEvents(events, stats){
     await sleep(Math.max(16, revealDur/chunks));
   }
 
-  // ---- 3. 死亡：短暂变暗（1帧感）后从 canvas 移除 ----
-  if (deaths.length){
-    for (const d of deaths){ const g = state.pop.get(d.name); if (g) g.dead = true; }
-    drawDish();
-    await sleep(Math.min(500, Math.max(180, dur*0.08)));
-    for (const d of deaths) state.pop.delete(d.name);
-    if (state.selected && !state.pop.has(state.selected)) state.selected = null;
-  }
-
-  // ---- 4. 新生：加入并短暂绿框，随后归位 ----
+  // ---- 3. 繁殖：新生加入培养皿并绿框高亮 ----
   if (births.length){
+    tip(`🧬 本回合繁殖：新生 ${births.length} 只`);
     for (const b of births){
       state.pop.set(b.name, { name:b.name, age:0, born_gen:b.gen, parents:b.parents, arch:b.arch,
                               alive:true, status:"idle", dead:false, birth:true,
                               lastProduced:null, lastCorrect:null, readout_profile:null });
     }
     drawDish();
-    await sleep(Math.min(600, Math.max(240, dur*0.12)));
+    await sleep(Math.min(700, Math.max(350, dur*0.15)));
     for (const b of births){ const g = state.pop.get(b.name); if (g) g.birth = false; }
   }
 
-  // ---- 5. 全灭重播：清空并重建 ----
+  // ---- 4. 死亡：按原因着色停留（暗红=吃错淘汰 / 暗金=自然老死） ----
+  if (deaths.length){
+    const nNat = deaths.filter(d => d.cause === "natural").length;
+    tip(`☠ 死亡 ${deaths.length} 只（自然 ${nNat} / 淘汰 ${deaths.length - nNat}）`);
+    for (const d of deaths){
+      const g = state.pop.get(d.name); if (g){ g.dead = true; g.deadCause = d.cause; }
+    }
+    drawDish();
+    await sleep(Math.min(800, Math.max(450, dur*0.18)));
+  }
+
+  // ---- 5. 移除死亡生物体：从培养皿清除 ----
+  if (deaths.length){
+    for (const d of deaths) state.pop.delete(d.name);
+    if (state.selected && !state.pop.has(state.selected)) state.selected = null;
+    drawDish();
+    await sleep(Math.min(300, Math.max(150, dur*0.06)));
+  }
+
+  // ---- 6. 全灭重播：清空并重建 ----
   if (reseed){
     state.pop.clear(); state.selected = null; state.reseeded = true;
     tip(`💀 全灭！重播初始种群 ${reseed.count} 只`);
@@ -427,7 +440,7 @@ async function replayEvents(events, stats){
     await sleep(700);
   }
 
-  // ---- 6. 结算：统计 / 曲线 / 停止判断 ----
+  // ---- 7. 结算：统计 / 曲线 / 停止判断 ----
   if (rEnd){
     state.stats = rEnd.stats;
     state.round = rEnd.stats.round;

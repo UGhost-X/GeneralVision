@@ -32,9 +32,9 @@ SURVIVAL_ROUNDS = 20     # 自然寿命上限（回合）
 N_REPRO = 50             # 每对每次繁殖数量 = 存活回合数 × N
 ASSORT_TAU = 2.0         # 选型交配：年龄相似度核宽（回合），固定不可调
 ASSORT_STRENGTH = 0.5    # 默认选型强度 s（0-1）
-CAPACITY = 500           # 环境承载力（种群上限；满容量实测均值约 4.5s、峰值约 5.5s）
+CAPACITY = 10000         # 环境承载力（种群上限）
 DENSITY_FLOOR = 0.05     # 密度地板：承载力处仍有 5% 替代性繁殖，防"满→90%暴毙→回填"锯齿
-INIT_POP = 60            # 初始/全灭重播种群数
+INIT_POP = 1000          # 初始/全灭重播种群数
 
 # ---- 多层架构边界（v3 结构突变） ----
 MIN_LAYERS = 1           # 最小隐藏层数
@@ -464,7 +464,7 @@ class Ecosystem:
             self.survival_rounds = int(kw["survival_rounds"])
         if "n_repro" in kw and 10 <= kw["n_repro"] <= 100:
             self.n_repro = int(kw["n_repro"])
-        if "capacity" in kw and 100 <= kw["capacity"] <= 5000:
+        if "capacity" in kw and 100 <= kw["capacity"] <= 10000:
             self.capacity = int(kw["capacity"])
         if "initial_pop" in kw and 60 <= kw["initial_pop"] <= 1000:
             self.initial_pop = int(kw["initial_pop"])

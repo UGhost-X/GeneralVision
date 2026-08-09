@@ -67,5 +67,30 @@ Calibration images used for threshold tuning after training. Naming convention:
 
 Standalone script that batch-compresses images > 2MB in a hardcoded target directory. Uses PIL with format-specific optimization (PNG quantization, JPEG quality reduction). Run directly with `python compress_images.py`. Edit `TARGET_DIR` in the script to change the target directory.
 
+## LIF 生态游戏（回合制：喂食-产出-淘汰-有性繁殖）
+
+游戏式神经进化的可视化演示：生物体 = LIF 脉冲网络（纯 numpy、权重出生即随机、**一生无学习**），在培养皿里吃 MNIST 数字、产出数字、按正确率淘汰与有性繁殖。与 STDP 进化系统（evolve.py）并存独立。
+
+### 文件与职责
+
+- `eco_engine.py` — 引擎（纯 numpy + numba JIT）：
+  - `Genome` / `random_genome` / `crossover`：基因与繁殖（存活加权交叉 + 五类结构突变 → 变深度 1-4 隐藏层）
+  - `_forward_core_multi` + `forward`：numba 多层 LIF 前向（泊松编码 → 逐层 LIF+WTA 无学习 → 产出层）
+  - `Ecosystem`：回合主循环（喂食 → 全体产出 → 淘汰 → 繁殖 → 全灭重播 → 停止判定），每回合输出事件流
+- `eco_server.py` — 本地 `http.server` 服务（`python eco_server.py --port 8765`），托管 `eco_game.html` + API：
+  `/api/state`（种群/配置/历史）、`/api/step`（推演一回合，返回 events+stats）、`/api/digit_image`、`/api/manual_feed`、`/api/config`
+- `eco_game.html` — 单文件前端：canvas 培养皿（点击个体解剖）、食物数字、统计曲线/存活直方图、参数滑块、手动喂食
+- `eco_tests.py` — 引擎 + 服务端测试（`python eco_tests.py`）；`_eco_smoke.py` — 30 回合冒烟基线
+
+### 回合制规则（v3）
+
+一回合 = 喂 1 个随机数字给全部存活者 → 各自产出 → 按正确率**淘汰最差 30%**（非自然，不计停止指标）+ 顶部 70% 中 `age > 存活回合数上限` **自然死亡**（计停止指标）→ 存活者**选型交配**（按年龄相似度，强度 s 可调）+ 存活加权交叉繁殖 → 密度依赖 + **承载力封顶**（繁殖只覆盖当回合死亡，种群稳定在初始规模附近）→ 结算。**停止条件**：累计自然死亡/总死亡 ≥ 95%（随机权重下基本不可达）；某回合全员死亡则按初始种群数全灭重播。
+
+### 关键常量（eco_engine.py 顶部）
+
+`T=40`（仿真步数）、`HIDDEN_SIZE=100`、`LEAK=0.94`、`THETA_HIDDEN=12.0`、`SURVIVAL_ROUNDS=20`（自然寿命）、`N_REPRO=50`（繁殖倍数）、`ASSORT_STRENGTH=0.5`（选型强度默认）、`CAPACITY=10000`（承载力）、`INIT_POP=1000`（初始/重播种群）、`DENSITY_FLOOR=0.05`；结构突变概率 `P_GROW=0.40 / P_SPLIT=0.15 / P_MERGE=0.10 / P_PRUNE=0.10 / P_ADDRANDOM=0.03`，层数 1-4、每层 20-200、总隐藏 ≤400。
+
+**诚实基线**：纯权重进化无学习，正确率贴随机线（best ≈ 0.1-0.2）；natural_rate 基本不可达 0.95；单回合耗时随种群线性增长（pop 1000 时约 0.3s）。
+
 ## 其他
  - 使用中文回复，英文思考
