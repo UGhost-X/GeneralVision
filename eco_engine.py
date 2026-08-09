@@ -79,6 +79,13 @@ REPRO_GROWTH_DIVISOR = 30.0
 DENSITY_FLOOR = 0.05
 POP_GROWTH = 0.10
 
+# 在线学习（P1）
+READOUT_LR_SCALE = 0.05          # 读出层 delta 学习实际步长 = readout_lr * 此值
+MATURITY_SAMPLES = 6             # 出生成熟期训练样本数
+READOUT_LR_MIN, READOUT_LR_MAX = 0.0, 1.0
+HIDDEN_PLASTICITY_MIN, HIDDEN_PLASTICITY_MAX = 0.0, 1.0
+PLASTICITY_DRIFT_MIN, PLASTICITY_DRIFT_MAX = 0.0, 0.5
+
 MAX_WEIGHTS = (
     (INPUT_SIZE + 1) * MAX_HIDDEN_SIZE
     + (MAX_HIDDEN_SIZE + 1) * MAX_HIDDEN_SIZE
@@ -166,6 +173,9 @@ class Genome:
     leak: float = LEAK
     input_gain: float = 1.0
     threshold_scale: float = 1.0
+    readout_lr: float = 0.2
+    hidden_plasticity: float = 0.05
+    plasticity_drift: float = 0.0
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -179,6 +189,9 @@ class Genome:
             "leak": self.leak,
             "input_gain": self.input_gain,
             "threshold_scale": self.threshold_scale,
+            "readout_lr": self.readout_lr,
+            "hidden_plasticity": self.hidden_plasticity,
+            "plasticity_drift": self.plasticity_drift,
         }
 
 
@@ -234,6 +247,9 @@ def random_genome(rng: Optional[np.random.Generator] = None) -> Genome:
         threshold_scale=float(
             np.clip(1.0 + rng.normal(0.0, 0.15), 0.6, 1.8)
         ),
+        readout_lr=float(np.clip(0.2 + rng.normal(0.0, 0.10), 0.0, 1.0)),
+        hidden_plasticity=float(np.clip(0.05 + rng.normal(0.0, 0.03), 0.0, 1.0)),
+        plasticity_drift=float(np.clip(0.0 + rng.normal(0.0, 0.05), 0.0, 0.5)),
     )
 
 
@@ -531,6 +547,9 @@ def _mutate_genome(genome: Genome, rng: np.random.Generator) -> Genome:
     leak = float(genome.leak)
     input_gain = float(genome.input_gain)
     threshold_scale = float(genome.threshold_scale)
+    readout_lr = float(genome.readout_lr)
+    hidden_plasticity = float(genome.hidden_plasticity)
+    plasticity_drift = float(genome.plasticity_drift)
     if trait_mutation:
         longevity_bonus = max(
             0, min(10, longevity_bonus + int(rng.integers(-1, 2)))
@@ -546,6 +565,16 @@ def _mutate_genome(genome: Genome, rng: np.random.Generator) -> Genome:
         next_mutation_rate = max(
             0.5,
             min(3.0, next_mutation_rate * math.exp(rng.normal(0.0, 0.15))),
+        )
+        readout_lr = max(
+            0.0, min(1.0, readout_lr * math.exp(rng.normal(0.0, 0.3)))
+        )
+        hidden_plasticity = max(
+            0.0,
+            min(1.0, hidden_plasticity * math.exp(rng.normal(0.0, 0.5))),
+        )
+        plasticity_drift = max(
+            0.0, min(0.5, plasticity_drift * math.exp(rng.normal(0.0, 0.3)))
         )
     if structural_mutation:
         wta_k = max(
@@ -587,6 +616,9 @@ def _mutate_genome(genome: Genome, rng: np.random.Generator) -> Genome:
             leak,
             input_gain,
             threshold_scale,
+            readout_lr,
+            hidden_plasticity,
+            plasticity_drift,
         )
 
     layer_sizes = list(genome.layer_sizes)
@@ -628,6 +660,9 @@ def _mutate_genome(genome: Genome, rng: np.random.Generator) -> Genome:
         leak,
         input_gain,
         threshold_scale,
+        readout_lr,
+        hidden_plasticity,
+        plasticity_drift,
     )
 
 
@@ -685,6 +720,9 @@ def crossover(
             float((donor.leak + other.leak) / 2.0),
             float((donor.input_gain + other.input_gain) / 2.0),
             float((donor.threshold_scale + other.threshold_scale) / 2.0),
+            float((donor.readout_lr + other.readout_lr) / 2.0),
+            float((donor.hidden_plasticity + other.hidden_plasticity) / 2.0),
+            float((donor.plasticity_drift + other.plasticity_drift) / 2.0),
         ),
         rng,
     )
@@ -1198,6 +1236,17 @@ class Organism:
     elite_rounds: int = 0
     fitness: float = 0.0
     digit_accuracies: List[float] = field(default_factory=list)
+    learned_weights: Optional[np.ndarray] = None
+    acc_ema: float = 0.5
+    samples_learned: int = 0
+
+    def _learning_amount(self) -> float:
+        if self.learned_weights is None:
+            return 0.0
+        denom = float(np.linalg.norm(self.genome.weights)) + 1e-8
+        return float(
+            np.linalg.norm(self.learned_weights - self.genome.weights)
+        ) / denom
 
     def to_dict(self, include_weights: bool = False) -> Dict[str, object]:
         data = {
@@ -1223,6 +1272,12 @@ class Organism:
             "leak": self.genome.leak,
             "input_gain": self.genome.input_gain,
             "threshold_scale": self.genome.threshold_scale,
+            "readout_lr": self.genome.readout_lr,
+            "hidden_plasticity": self.genome.hidden_plasticity,
+            "plasticity_drift": self.genome.plasticity_drift,
+            "learning_amount": self._learning_amount(),
+            "samples_learned": self.samples_learned,
+            "acc_ema": self.acc_ema,
             "fitness": self.fitness,
             "digit_accuracies": self.digit_accuracies,
         }
@@ -1290,21 +1345,26 @@ class Ecosystem:
             self._founder_specs = self._select_founding_specs(per_digit)
             self._founder_per_digit = per_digit
 
-        for genome, digit in self._founder_specs:
+        for founder_genome, digit in self._founder_specs:
+            seed_genome = Genome(
+                tuple(founder_genome.layer_sizes),
+                founder_genome.weights.copy(),
+                founder_genome.longevity_bonus,
+                founder_genome.fecundity,
+                founder_genome.wrong_tolerance,
+                founder_genome.mutation_rate,
+                founder_genome.wta_k,
+                founder_genome.leak,
+                founder_genome.input_gain,
+                founder_genome.threshold_scale,
+                founder_genome.readout_lr,
+                founder_genome.hidden_plasticity,
+                founder_genome.plasticity_drift,
+            )
             organism = Organism(
                 uid=self._next_uid,
-                genome=Genome(
-                    tuple(genome.layer_sizes),
-                    genome.weights.copy(),
-                    genome.longevity_bonus,
-                    genome.fecundity,
-                    genome.wrong_tolerance,
-                    genome.mutation_rate,
-                    genome.wta_k,
-                    genome.leak,
-                    genome.input_gain,
-                    genome.threshold_scale,
-                ),
+                genome=seed_genome,
+                learned_weights=seed_genome.weights.copy(),
                 born_round=self.round,
                 correct=True,
                 prediction=digit,
@@ -1633,6 +1693,7 @@ class Ecosystem:
         organism.alive = False
         organism.died_round = self.round
         organism.death_reason = reason
+        organism.learned_weights = None
 
     def _survival_histogram(self, organisms: Sequence[Organism]) -> List[int]:
         bins = [0] * (self.config.survival_rounds + 1)
