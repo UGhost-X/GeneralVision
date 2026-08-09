@@ -188,6 +188,63 @@ def test_server_endpoints():
         server.server_close()
 
 
+def test_survival_alpha():
+    """存活奖励 alpha = 1/每回合存活率：全员存活→1.0；半存活→2.0；0 存活→1.0（防御）。"""
+    assert eco.survival_alpha(10, 10) == 1.0
+    assert abs(eco.survival_alpha(5, 10) - 2.0) < 1e-9
+    assert eco.survival_alpha(0, 10) == 1.0     # 0 存活防御
+    assert eco.survival_alpha(3, 0) == 1.0      # 空回合防御
+
+
+def test_assortative_pairing_tends_similar_age():
+    """选型交配：s=1.0 时年龄两极分化的存活者各自聚类配对，平均 |Δage| 显著小于 s=0（随机）。"""
+    rng = np.random.default_rng(42)
+    survivors = [eco.random_genome(f"lo{i}", rng) for i in range(20)]
+    for g in survivors:
+        g.age = 1
+    survivors += [eco.random_genome(f"hi{i}", rng) for i in range(20)]
+    for g in survivors[20:]:
+        g.age = 20
+
+    def mean_abs_diff(strength):
+        diffs = []
+        for s in range(30):
+            pairs = eco.assortative_pairs(survivors, strength,
+                                          np.random.default_rng(1000 + s))
+            diffs += [abs(a.age - b.age) for a, b in pairs]
+        return float(np.mean(diffs))
+
+    d_random = mean_abs_diff(0.0)
+    d_assort = mean_abs_diff(1.0)
+    assert d_assort < d_random * 0.6, f"选型配对平均年龄差 {d_assort:.2f} 应显著小于随机 {d_random:.2f}"
+
+
+def test_stats_has_survival_rate_alpha():
+    """round_end stats 与 /api/state stats 均含 survival_rate/alpha；未取整的 last_* 满足恒等。"""
+    e = eco.Ecosystem(seed=2)
+    for _ in range(3):
+        _, stats = e.step_round()
+        assert "survival_rate" in stats and "alpha" in stats
+        assert stats["survival_rate"] >= 0.0 and stats["alpha"] >= 1.0
+    # 核心恒等：alpha == 1/存活率（用未取整值，取整会引入 ~0.005 误差，故不在 stats 上断言精确恒等）
+    if e.last_survival_rate > 0:
+        assert abs(e.last_alpha - 1.0 / e.last_survival_rate) < 1e-9
+    st = e.get_state()["stats"]
+    assert "survival_rate" in st and "alpha" in st
+
+
+def test_config_assort_strength():
+    """assort_strength 可设/可回读；非法值（<0 或 >1）被忽略。"""
+    e = eco.Ecosystem(seed=4)
+    e.set_config(assort_strength=0.8)
+    assert abs(e.assort_strength - 0.8) < 1e-9
+    assert abs(e._config()["assort_strength"] - 0.8) < 1e-9
+    e.set_config(assort_strength=-0.1)
+    assert abs(e.assort_strength - 0.8) < 1e-9   # 非法值忽略
+    e.set_config(assort_strength=1.5)
+    assert abs(e.assort_strength - 0.8) < 1e-9
+
+
 def _forward_numpy_reference(genome, pixels, rng):
     """纯 numpy 参考实现（对照 numba JIT 核心，验证语义一致；仅测试用）。"""
     B = pixels.shape[0]; T = eco.T

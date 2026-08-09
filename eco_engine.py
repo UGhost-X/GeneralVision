@@ -3,7 +3,8 @@
 
 生物体 = LIF 网络（784 输入 → 100 隐藏神经元 → 10 产出神经元），所有权重
 出生即随机、一生固定。一回合喂 1 个数字：产出错误的当回合死亡（非自然），
-活到存活回合数上限自然死亡；存活者随机两两配对、按存活时长加权交叉繁殖，
+活到存活回合数上限自然死亡；存活者按年龄相似度选型配对（可调强度 s）、
+按存活时长加权交叉繁殖，产仔数 × 存活奖励 alpha（1/每回合存活率），
 密度依赖 + 承载力封顶。输出标准化事件流供前端播放。
 """
 from __future__ import annotations
@@ -29,6 +30,8 @@ CROSS_SIGMA = 0.01       # 有性繁殖高斯扰动 σ
 MUT_RATE = 0.001         # 千分之一大突变
 SURVIVAL_ROUNDS = 20     # 自然寿命上限（回合）
 N_REPRO = 50             # 每对每次繁殖数量 = 存活回合数 × N
+ASSORT_TAU = 2.0         # 选型交配：年龄相似度核宽（回合），固定不可调
+ASSORT_STRENGTH = 0.5    # 默认选型强度 s（0-1）
 CAPACITY = 500           # 环境承载力（种群上限；满容量实测均值约 4.5s、峰值约 5.5s）
 DENSITY_FLOOR = 0.05     # 密度地板：承载力处仍有 5% 替代性繁殖，防"满→90%暴毙→回填"锯齿
 INIT_POP = 60            # 初始/全灭重播种群数
@@ -98,6 +101,41 @@ def crossover(a: Genome, b: Genome, rng: np.random.Generator,
 
     return Genome(name="child", hidden=hidden, readout=readout,
                   parents=(a.name, b.name))
+
+
+def survival_alpha(n_survivors: int, n_start: int) -> float:
+    """存活奖励 alpha = 1 / 每回合存活率（种群级）。
+
+    存活率 = 本回合存活者 / 回合开始种群数。全员存活→1.0；0 存活→1.0（防御）。
+    """
+    if n_start <= 0:
+        return 1.0
+    sr = n_survivors / n_start
+    return 1.0 / sr if sr > 0 else 1.0
+
+
+def assortative_pairs(survivors: list[Genome], strength: float,
+                      rng: np.random.Generator, tau: float = ASSORT_TAU
+                      ) -> list[tuple[Genome, Genome]]:
+    """选型交配：年龄相似度加权配对。
+
+    随机序取第一只 a；第二只从剩余存活者中按 w=(1-strength)+strength·exp(-|Δage|/tau)
+    加权采样。strength=0 → 权重恒等 → 均匀随机配对（统计等价原 shuffle+相邻）；
+    strength=1 → 纯按年龄相似度（高龄与高龄、低龄与低龄聚类）。奇数存活者最后一只不配对。
+    """
+    pool = list(survivors)
+    rng.shuffle(pool)
+    pairs = []
+    while len(pool) >= 2:
+        a = pool[0]
+        rest = pool[1:]                                # 切片即排除 a
+        d = np.abs(np.array([g.age for g in rest], dtype=float) - a.age)
+        w = (1.0 - strength) + strength * np.exp(-d / tau)
+        b_idx = int(rng.choice(len(rest), p=w / w.sum()))
+        b = rest.pop(b_idx)                            # 从 rest 移除 b
+        pairs.append((a, b))
+        pool = rest
+    return pairs
 
 
 def death_cause(g: Genome, correct: bool, survival_rounds: int) -> str | None:
@@ -241,6 +279,10 @@ class Ecosystem:
         self.n_repro = N_REPRO
         self.capacity = CAPACITY
         self.initial_pop = INIT_POP
+        self.assort_strength = ASSORT_STRENGTH
+        # 上一回合观测（前端 /api/state 展示）
+        self.last_survival_rate = 0.0
+        self.last_alpha = 1.0
         # 停止条件计数
         self.natural_deaths = 0
         self.total_deaths = 0
@@ -262,10 +304,13 @@ class Ecosystem:
             self.capacity = int(kw["capacity"])
         if "initial_pop" in kw and 60 <= kw["initial_pop"] <= 1000:
             self.initial_pop = int(kw["initial_pop"])
+        if "assort_strength" in kw and 0.0 <= kw["assort_strength"] <= 1.0:
+            self.assort_strength = float(kw["assort_strength"])
         return self._config()
 
     def _config(self) -> dict:
         return {"survival_rounds": self.survival_rounds, "n_repro": self.n_repro,
+                "assort_strength": self.assort_strength,
                 "capacity": self.capacity, "initial_pop": self.initial_pop}
 
     def _next_name(self) -> str:
@@ -308,13 +353,18 @@ class Ecosystem:
                 survivors.append(g)
         avg_correct /= max(1, len(self.pop))
 
-        # ---- 随机两两配对繁殖（存活时长加权交叉 + 密度依赖 + 承载力） ----
-        self.rng.shuffle(survivors)
-        pairs = [(survivors[j], survivors[j + 1]) for j in range(0, len(survivors) - 1, 2)]
+        # ---- 存活奖励 alpha：存活率 = 本回合存活者 / 回合开始种群 ----
+        start_pop = len(self.pop)
+        alpha = survival_alpha(len(survivors), start_pop)
+        self.last_survival_rate = (len(survivors) / start_pop) if start_pop > 0 else 0.0
+        self.last_alpha = alpha
+
+        # ---- 选型交配繁殖（年龄相似度加权配对 + 存活时长加权交叉 + 密度依赖 + 承载力） ----
+        pairs = assortative_pairs(survivors, self.assort_strength, self.rng)
         births: list[Genome] = []
         if pairs:
-            density = max(DENSITY_FLOOR, 1.0 - len(self.pop) / self.capacity)
-            brood = int(round(self.survival_rounds * self.n_repro * density))
+            density = max(DENSITY_FLOOR, 1.0 - start_pop / self.capacity)
+            brood = int(round(self.survival_rounds * self.n_repro * alpha * density))
             room = max(0, self.capacity - len(survivors))
             target = min(room, len(pairs) * brood)
             for k in range(target):
@@ -342,6 +392,8 @@ class Ecosystem:
         self.stopped = self.stopped or (natural_rate >= 0.95)
         stats = {"round": self.round, "alive": len(self.pop),
                  "avg_acc": round(avg_correct, 4),
+                 "survival_rate": round(self.last_survival_rate, 4),
+                 "alpha": round(self.last_alpha, 3),
                  "natural_deaths": self.natural_deaths,
                  "total_deaths": self.total_deaths,
                  "natural_rate": round(natural_rate, 4),
@@ -360,6 +412,8 @@ class Ecosystem:
     def _last_stats(self) -> dict:
         natural_rate = (self.natural_deaths / self.total_deaths) if self.total_deaths > 0 else 0.0
         return {"round": self.round, "alive": len(self.pop),
+                "survival_rate": self.last_survival_rate,
+                "alpha": self.last_alpha,
                 "natural_deaths": self.natural_deaths,
                 "total_deaths": self.total_deaths,
                 "natural_rate": round(natural_rate, 4),
