@@ -426,6 +426,33 @@ def test_silent_birth_preserves_output():
     assert int(rc0.sum()) == int(rc1.sum()), "静默诞生不应改变产出发放"
 
 
+def test_history_and_age_hist():
+    """/api/state 含 history 序列；stats 含 age_hist(长度=存活上限)/newborns；population 含 arch。"""
+    e = eco.Ecosystem(seed=0)
+    for _ in range(3):
+        e.step_round()
+    st = e.get_state()
+    assert "history" in st and len(st["history"]) == 3
+    assert set(st["history"][-1]) >= {"round", "alive", "avg_acc", "natural_rate",
+                                      "survival_rate", "alpha"}
+    s = st["stats"]
+    assert "age_hist" in s and len(s["age_hist"]) == e.survival_rounds
+    assert "newborns" in s
+    assert sum(s["age_hist"]) + s["newborns"] == len(e.pop), "直方图+新生应覆盖全部存活"
+    assert 0 <= s["newborns"] <= len(e.pop)
+    for p in st["population"]:
+        assert isinstance(p["arch"], list) and all(isinstance(n, int) for n in p["arch"])
+        assert p["arch"], "arch 不应为空"
+
+
+def test_birth_event_has_arch():
+    """birth 事件带子代架构（前端新生即可画解剖图）。"""
+    e = eco.Ecosystem(seed=5)
+    events, _ = e.step_round()
+    births = [ev for ev in events if ev["type"] == "birth"]
+    assert births and all("arch" in b for b in births)
+
+
 if __name__ == "__main__":
     for _name, _fn in sorted(globals().items()):
         if _name.startswith("test_") and callable(_fn):
