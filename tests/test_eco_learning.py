@@ -123,3 +123,32 @@ def test_zero_readout_lr_skips_learning(eco):
     for i, o in enumerate(alive):
         assert np.allclose(before[i], o.learned_weights)
         assert o.samples_learned == 0
+
+
+def test_maturate_updates_readout(eco):
+    eco.reset()
+    eco.config.maturity_samples = 3
+    orgs = [o for o in eco.population if o.alive][:5]
+    for o in orgs:
+        o.genome.readout_lr = 0.5
+    before = [o.learned_weights.copy() for o in orgs]
+    eco._maturate(orgs)
+    for i, o in enumerate(orgs):
+        assert o.samples_learned == 3
+        assert not np.allclose(before[i], o.learned_weights)
+
+
+def test_step_respects_learning_switch(eco):
+    eco.reset()
+    eco.config.learning_on = False
+    for o in eco.population:
+        o.genome.readout_lr = 0.5
+    before = {
+        o.uid: o.learned_weights.copy()
+        for o in eco.population
+        if o.alive
+    }
+    eco.step()
+    for o in eco.population:
+        if o.alive and o.uid in before:
+            assert np.allclose(before[o.uid], o.learned_weights)

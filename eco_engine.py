@@ -1247,6 +1247,7 @@ class EcoConfig:
     pop_growth: float = POP_GROWTH
     feed_interval: float = 5.0
     learning_on: bool = True
+    maturity_samples: int = MATURITY_SAMPLES
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -1259,6 +1260,7 @@ class EcoConfig:
             "pop_growth": self.pop_growth,
             "feed_interval": self.feed_interval,
             "learning_on": self.learning_on,
+            "maturity_samples": self.maturity_samples,
         }
 
     def update(self, values: Dict[str, object]) -> None:
@@ -1290,6 +1292,10 @@ class EcoConfig:
             )
         if "learning_on" in values:
             self.learning_on = bool(values["learning_on"])
+        if "maturity_samples" in values:
+            self.maturity_samples = int(
+                min(50, max(0, int(values["maturity_samples"])))
+            )
 
 
 @dataclass
@@ -1588,6 +1594,27 @@ class Ecosystem:
             if drift > 0.0:
                 learned += drift * (g.weights - learned)
             organism.samples_learned += 1
+
+    def _maturate(self, newborns: Sequence[Organism]) -> None:
+        """出生成熟期：用 MATURITY_SAMPLES 张训练集图批量发育新生儿表型。
+
+        用训练集而非食物流，保证评测诚实；每张样本对全体新生儿批量前向，
+        走同一个 _learn_readout（读出层 delta）。
+        """
+        k = self.config.maturity_samples
+        if k <= 0 or not newborns:
+            return
+        for _ in range(k):
+            label = int(self.rng.integers(10))
+            candidates = np.flatnonzero(self._train_labels == label)
+            if len(candidates) == 0:
+                continue
+            index = int(candidates[self.rng.integers(len(candidates))])
+            image = self._train_images[index]
+            spikes = _sample_spikes(image, self.rng)
+            shims = _phenotype_genomes(newborns)
+            _, rates, hidden_rates = forward_learn(shims, spikes)
+            self._learn_readout(newborns, hidden_rates, rates, label)
 
     def _run_census(self) -> Dict[str, object]:
         alive = [o for o in self.population if o.alive]
@@ -2109,6 +2136,7 @@ class Ecosystem:
         target_pop = min(self.config.capacity, len(survivors) + needed)
 
         offspring = 0
+        newborns: List[Organism] = []
         no_repro_deaths: List[Organism] = []
         if survivors and target_pop > len(survivors):
             pairs = self._assortative_pairs(
@@ -2140,32 +2168,38 @@ class Ecosystem:
                     if first is not second:
                         second.failed_repro_rounds += 1
                 for _ in range(count):
+                    child_genome = crossover(
+                        first.genome,
+                        second.genome,
+                        first.age,
+                        second.age,
+                        self.rng,
+                        first.fitness,
+                        second.fitness,
+                    )
                     child = Organism(
                         uid=self._next_uid,
-                        genome=crossover(
-                            first.genome,
-                            second.genome,
-                            first.age,
-                            second.age,
-                            self.rng,
-                            first.fitness,
-                            second.fitness,
-                        ),
+                        genome=child_genome,
                         born_round=self.round,
                         digit_preference=(
                             first.digit_preference
                             if self.rng.random() < 0.5
                             else second.digit_preference
                         ),
+                        learned_weights=child_genome.weights.copy(),
                     )
                     self._next_uid += 1
                     self.population.append(child)
+                    newborns.append(child)
                     events["births"].append({"id": child.uid})  # type: ignore[attr-defined]
                     offspring += 1
 
             for organism in survivors:
                 if organism.uid not in paired_ids:
                     organism.failed_repro_rounds += 1
+
+        if self.config.learning_on:
+            self._maturate(newborns)
 
         for organism in survivors:
             if organism.elite_rounds > 0:
