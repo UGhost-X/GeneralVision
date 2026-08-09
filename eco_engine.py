@@ -16,7 +16,7 @@ DATA_DIR = Path(__file__).resolve().parent / "data" / "MNIST" / "raw"
 
 T = 40
 INPUT_SIZE = 784
-INPUT_SAMPLES_PER_STEP = 96
+INPUT_SAMPLES_PER_STEP = 12
 MAX_HIDDEN_SIZE = 200
 MAX_DEPTH = 4
 MAX_TOTAL_HIDDEN = 400
@@ -187,15 +187,15 @@ def _unflatten(
     prev = INPUT_SIZE
     for n in layer_sizes:
         count = prev * n + n
-        mat = flat[offset : offset + prev * n].reshape(prev, n).astype(np.float32)
-        bias = flat[offset + prev * n : offset + count].astype(np.float32)
+        mat = flat[offset : offset + prev * n].reshape(prev, n)
+        bias = flat[offset + prev * n : offset + count]
         hidden_mats.append(mat)
         hidden_biases.append(bias)
         offset += count
         prev = n
     count = prev * 10 + 10
-    out_mat = flat[offset : offset + prev * 10].reshape(prev, 10).astype(np.float32)
-    out_bias = flat[offset + prev * 10 : offset + count].astype(np.float32)
+    out_mat = flat[offset : offset + prev * 10].reshape(prev, 10)
+    out_bias = flat[offset + prev * 10 : offset + count]
     return hidden_mats, hidden_biases, out_mat, out_bias
 
 
@@ -211,7 +211,7 @@ def _flatten(
         parts.append(np.asarray(bias).ravel())
     parts.append(np.asarray(out_mat).ravel())
     parts.append(np.asarray(out_bias).ravel())
-    return np.concatenate(parts).astype(np.float32)
+    return np.concatenate(parts)
 
 
 def _grow_silent(
@@ -308,10 +308,8 @@ def _merge_layers(
     b2 = biases[layer_idx + 1]
     n2 = w2.shape[1]
 
-    merged_w = (w1.astype(np.float64) @ w2.astype(np.float64)).astype(np.float32)
-    merged_b = (
-        w2.T.astype(np.float64) @ b1.astype(np.float64) + b2.astype(np.float64)
-    ).astype(np.float32)
+    merged_w = w1 @ w2
+    merged_b = w2.T @ b1 + b2
     old_out = mats[layer_idx + 2] if layer_idx + 2 < len(mats) else out_mat
 
     mats[layer_idx] = merged_w
@@ -412,26 +410,38 @@ def _insert_random_layer(
 
 
 def _mutate_genome(genome: Genome, rng: np.random.Generator) -> Genome:
-    layer_sizes = list(genome.layer_sizes)
-    mats, biases, out_mat, out_bias = _unflatten(genome.weights, layer_sizes)
+    rolls = [
+        rng.random() < P_GROW,
+        rng.random() < P_SPLIT,
+        rng.random() < P_MERGE,
+        rng.random() < P_PRUNE,
+        rng.random() < P_ADDRANDOM,
+    ]
+    if not any(rolls):
+        return Genome(tuple(genome.layer_sizes), genome.weights)
 
-    if rng.random() < P_GROW:
+    layer_sizes = list(genome.layer_sizes)
+    mats, biases, out_mat, out_bias = _unflatten(
+        genome.weights.copy(), layer_sizes
+    )
+
+    if rolls[0]:
         _, out_mat, out_bias = _grow_silent(
             layer_sizes, mats, biases, out_mat, out_bias, rng
         )
-    if rng.random() < P_SPLIT:
+    if rolls[1]:
         _, out_mat, out_bias = _split_identity(
             layer_sizes, mats, biases, out_mat, out_bias, rng
         )
-    if rng.random() < P_MERGE:
+    if rolls[2]:
         _, out_mat, out_bias = _merge_layers(
             layer_sizes, mats, biases, out_mat, out_bias, rng
         )
-    if rng.random() < P_PRUNE:
+    if rolls[3]:
         _, out_mat, out_bias = _prune_neurons(
             layer_sizes, mats, biases, out_mat, out_bias, rng
         )
-    if rng.random() < P_ADDRANDOM:
+    if rolls[4]:
         _, out_mat, out_bias = _insert_random_layer(
             layer_sizes, mats, biases, out_mat, out_bias, rng
         )
@@ -462,37 +472,18 @@ def crossover(
         other = parent_a
 
     layer_sizes = list(donor.layer_sizes)
-    mats, biases, out_mat, out_bias = _unflatten(donor.weights, layer_sizes)
-    other_mats, other_biases, other_out_mat, other_out_bias = _unflatten(
-        other.weights, other.layer_sizes
+    flat = donor.weights.copy()
+    if tuple(layer_sizes) == other.layer_sizes:
+        start = int(rng.integers(0, 2))
+        flat[start::2] = other.weights[start::2]
+    n_jitter = max(1, int(flat.size * 0.02))
+    jitter_pos = rng.integers(0, flat.size, size=n_jitter)
+    flat[jitter_pos] += rng.uniform(-0.03, 0.03, size=n_jitter).astype(
+        np.float32
     )
-
-    shared_depth = min(len(layer_sizes), len(other.layer_sizes))
-    for i in range(shared_depth):
-        if layer_sizes[i] != other.layer_sizes[i]:
-            continue
-        n = layer_sizes[i]
-        prev_n = INPUT_SIZE if i == 0 else layer_sizes[i - 1]
-        mask = rng.random((prev_n, n)) < 0.5
-        mats[i] = np.where(mask, mats[i], other_mats[i]).astype(np.float32)
-        bias_mask = rng.random(n) < 0.5
-        biases[i] = np.where(bias_mask, biases[i], other_biases[i]).astype(np.float32)
-
-    if (
-        len(layer_sizes) == len(other.layer_sizes)
-        and layer_sizes[-1] == other.layer_sizes[-1]
-    ):
-        mask = rng.random((layer_sizes[-1], 10)) < 0.5
-        out_mat = np.where(mask, out_mat, other_out_mat).astype(np.float32)
-        bias_mask = rng.random(10) < 0.5
-        out_bias = np.where(bias_mask, out_bias, other_out_bias).astype(np.float32)
-
-    flat = _flatten(mats, biases, out_mat, out_bias)
-    jitter = rng.normal(0.0, 0.02, size=flat.shape).astype(np.float32)
-    flat += jitter
-    big = rng.random(flat.shape) < BIG_MUTATION_RATE
-    if int(big.sum()) > 0:
-        flat[big] += rng.normal(0.0, 0.3, size=int(big.sum())).astype(np.float32)
+    n_big = max(1, int(flat.size * BIG_MUTATION_RATE))
+    big_pos = rng.integers(0, flat.size, size=n_big)
+    flat[big_pos] += rng.uniform(-0.5, 0.5, size=n_big).astype(np.float32)
 
     return _mutate_genome(Genome(tuple(layer_sizes), flat), rng)
 
@@ -620,30 +611,156 @@ def _pack_batch(
     return weights, sizes, offsets, lengths
 
 
+def _stack_genome_group(
+    genomes: Sequence[Genome],
+    layer_sizes: Sequence[int],
+) -> Tuple[List[np.ndarray], List[np.ndarray], np.ndarray, np.ndarray]:
+    n_pop = len(genomes)
+    mats: List[np.ndarray] = []
+    biases: List[np.ndarray] = []
+    offset = 0
+    prev = INPUT_SIZE
+
+    for n_hidden in layer_sizes:
+        count = prev * n_hidden + n_hidden
+        mat = np.empty((n_pop, prev, n_hidden), dtype=np.float32)
+        bias = np.empty((n_pop, n_hidden), dtype=np.float32)
+        for i, genome in enumerate(genomes):
+            mat[i] = genome.weights[
+                offset : offset + prev * n_hidden
+            ].reshape(prev, n_hidden)
+            bias[i] = genome.weights[
+                offset + prev * n_hidden : offset + count
+            ]
+        mats.append(mat)
+        biases.append(bias)
+        offset += count
+        prev = n_hidden
+
+    count = prev * 10 + 10
+    out_mat = np.empty((n_pop, prev, 10), dtype=np.float32)
+    out_bias = np.empty((n_pop, 10), dtype=np.float32)
+    for i, genome in enumerate(genomes):
+        out_mat[i] = genome.weights[offset : offset + prev * 10].reshape(prev, 10)
+        out_bias[i] = genome.weights[offset + prev * 10 : offset + count]
+    return mats, biases, out_mat, out_bias
+
+
+def _vectorized_wta(mem: np.ndarray) -> np.ndarray:
+    fire = mem >= THETA_HIDDEN
+    best = np.argmax(np.where(fire, mem, -1e9), axis=1)
+    spk = np.zeros_like(mem)
+    rows = np.flatnonzero(fire.any(axis=1))
+    spk[rows, best[rows]] = 1.0
+    mem[rows, best[rows]] = 0.0
+    return spk
+
+
+def _forward_group_vectorized(
+    mats: Sequence[np.ndarray],
+    biases: Sequence[np.ndarray],
+    out_mat: np.ndarray,
+    out_bias: np.ndarray,
+    spike_idx: np.ndarray,
+    spike_vals: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    n_pop = mats[0].shape[0]
+    n_steps = spike_idx.shape[0]
+    depth = len(mats)
+    mem = [
+        np.zeros((n_pop, mats[layer_idx].shape[2]), dtype=np.float32)
+        for layer_idx in range(depth)
+    ]
+    spk: List[np.ndarray] = [None] * depth
+    out_mem = np.zeros((n_pop, 10), dtype=np.float32)
+    out_counts = np.zeros((n_pop, 10), dtype=np.int32)
+
+    for t in range(n_steps):
+        selected = np.take(mats[0], spike_idx[t], axis=1)
+        acc = np.einsum("k,nkj->nj", spike_vals[t], selected)
+        mem[0] = mem[0] * LEAK + acc + biases[0]
+        spk[0] = _vectorized_wta(mem[0])
+
+        for layer_idx in range(1, depth):
+            acc = np.einsum(
+                "np,npj->nj", spk[layer_idx - 1], mats[layer_idx]
+            )
+            mem[layer_idx] = (
+                mem[layer_idx] * LEAK + acc + biases[layer_idx]
+            )
+            spk[layer_idx] = _vectorized_wta(mem[layer_idx])
+
+        acc = np.einsum("np,npo->no", spk[-1], out_mat)
+        out_mem = out_mem * LEAK_OUTPUT + acc + out_bias
+        fire = out_mem >= THETA_OUTPUT
+        out_counts += fire
+        out_mem[fire] = 0.0
+
+    return out_counts, out_mem
+
+
+def _forward_numba_batch(
+    genomes: Sequence[Genome],
+    spike_idx: np.ndarray,
+    spike_vals: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    weights, sizes, offsets, lengths = _pack_batch(genomes)
+    counts, mem = _forward_core_multi(
+        weights, sizes, offsets, lengths, spike_idx, spike_vals
+    )
+    predictions = np.where(
+        counts.max(axis=1) > 0,
+        counts.argmax(axis=1),
+        mem.argmax(axis=1),
+    ).astype(np.int32)
+    rates = counts.astype(np.float32) / float(T)
+    return predictions, rates
+
+
 def forward(
     genomes: Sequence[Genome],
     spikes: Tuple[np.ndarray, np.ndarray],
     batch_size: int = 64,
 ) -> Tuple[np.ndarray, np.ndarray]:
     spike_idx, spike_vals = spikes
-    predictions: List[int] = []
-    rates: List[np.ndarray] = []
-
-    for start in range(0, len(genomes), batch_size):
-        batch = genomes[start : start + batch_size]
-        weights, sizes, offsets, lengths = _pack_batch(batch)
-        counts, mem = _forward_core_multi(
-            weights, sizes, offsets, lengths, spike_idx, spike_vals
+    if not genomes:
+        return (
+            np.empty((0,), dtype=np.int32),
+            np.empty((0, 10), dtype=np.float32),
         )
-        for i in range(len(batch)):
-            if int(counts[i].max()) > 0:
-                pred = int(np.argmax(counts[i]))
-            else:
-                pred = int(np.argmax(mem[i]))
-            predictions.append(pred)
-            rates.append(counts[i].astype(np.float32) / float(T))
 
-    return np.asarray(predictions, dtype=np.int32), np.asarray(rates, dtype=np.float32)
+    groups: Dict[Tuple[int, ...], List[int]] = {}
+    for idx, genome in enumerate(genomes):
+        groups.setdefault(tuple(genome.layer_sizes), []).append(idx)
+
+    predictions = np.empty(len(genomes), dtype=np.int32)
+    rates = np.empty((len(genomes), 10), dtype=np.float32)
+    for layer_sizes, indices in groups.items():
+        selected = [genomes[i] for i in indices]
+        if len(selected) >= 8:
+            mats, biases, out_mat, out_bias = _stack_genome_group(
+                selected, layer_sizes
+            )
+            counts, mem = _forward_group_vectorized(
+                mats,
+                biases,
+                out_mat,
+                out_bias,
+                spike_idx,
+                spike_vals,
+            )
+            predictions[indices] = np.where(
+                counts.max(axis=1) > 0,
+                counts.argmax(axis=1),
+                mem.argmax(axis=1),
+            ).astype(np.int32)
+            rates[indices] = counts.astype(np.float32) / float(T)
+        else:
+            predictions[indices], rates[indices] = _forward_numba_batch(
+                selected, spike_idx, spike_vals
+            )
+
+    return predictions, rates
 
 
 def wrong_death_prob(survived_rounds: int) -> float:
@@ -750,7 +867,17 @@ class Ecosystem:
         self._train_images, self._train_labels, self._test_images, self._test_labels = (
             load_mnist()
         )
+        self._warmup_numba()
         self.reset()
+
+    def _warmup_numba(self) -> None:
+        warm_rng = np.random.default_rng(0)
+        dummy = random_genome(warm_rng)
+        spike_idx, spike_vals = _sample_spikes(
+            np.zeros(INPUT_SIZE, dtype=np.float32),
+            warm_rng,
+        )
+        _forward_numba_batch([dummy], spike_idx, spike_vals)
 
     def reset(self) -> None:
         self.round = 0
