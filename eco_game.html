@@ -50,6 +50,13 @@
   .mm { font-size:11px; color:var(--dim); margin-top:6px; }
   #anatomy .profile { display:flex; gap:2px; height:70px; align-items:flex-end; margin:8px 0; }
   #anatomy .profile > i { flex:1; background:var(--line); }
+  #hist { width:100%; height:90px; margin-top:4px; }
+  #newbornLabel { color:var(--ok); }
+  .archrow { display:flex; gap:4px; align-items:stretch; margin:8px 0; }
+  .archrow > * { flex:1; text-align:center; border-radius:4px; font-size:11px; padding:4px 0; }
+  .archrow .archin { background:var(--line); color:var(--dim); }
+  .archrow .archlay { background:var(--accent); color:var(--bg); }
+  .archrow .archlay.multi { background:var(--purple); }
 </style>
 </head>
 <body>
@@ -91,7 +98,10 @@
     </div>
     <div class="panel"><b>种群统计</b>
       <canvas id="curves"></canvas>
-      <div class="mm">蓝=本回合正确率　绿=种群数/承载力　紫=自然死亡率</div>
+      <div class="mm">蓝=正确率　绿=种群/承载力　紫=自然死亡率</div>
+      <div id="newbornLabel" class="mm"></div>
+      <canvas id="hist"></canvas>
+      <div class="mm">存活回合数分布（横轴 1..上限，亮绿=当前峰值）</div>
     </div>
     <div class="panel"><b>手动喂食</b>
       <div class="mm" id="feedTarget">目标：随机存活者（点击色块指定）</div>
@@ -164,11 +174,15 @@ function drawCurves(){
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,W,H);
   const n = state.correctSeries.length;
-  if (n < 2) return;
+  if (n < 1){
+    ctx.fillStyle = "#8b949e"; ctx.font = "13px system-ui, sans-serif";
+    ctx.textAlign = "center"; ctx.fillText("等待推演…", W/2, H/2);
+    return;
+  }
   const plot = (series, color, width = 1.5) => {
     ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
     series.forEach((v,i) => {
-      const x = i/(n-1)*W, y = H - Math.max(0, Math.min(1, v))*H;
+      const x = n === 1 ? W/2 : i/(n-1)*W, y = H - Math.max(0, Math.min(1, v))*H;
       i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
     });
     ctx.stroke();
@@ -177,6 +191,30 @@ function drawCurves(){
   plot(state.naturalSeries, "#bc8cff");                          // 紫=自然死亡率 0-1
   const cap = (state.config && state.config.capacity) || 500;    // 绿=种群/承载力
   plot(state.popSeries.map(v => v/cap), "#3fb950");
+}
+
+function drawAgeHist(hist, newborns){
+  const cv = $("#hist"); if (!cv) return;
+  const dpr = devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (!W || !H) return;
+  cv.width = Math.round(W*dpr); cv.height = Math.round(H*dpr);
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+  $("#newbornLabel").textContent = newborns ? `本回合新生 ${newborns} 只` : "";
+  if (!hist || !hist.length){
+    ctx.fillStyle = "#8b949e"; ctx.font = "12px system-ui, sans-serif";
+    ctx.textAlign = "center"; ctx.fillText("等待推演…", W/2, H/2);
+    return;
+  }
+  const maxv = Math.max(1, ...hist);
+  const bw = Math.max(1, W / hist.length - 2);
+  hist.forEach((v,i) => {
+    const h = Math.max(1, v / maxv * (H - 8));
+    ctx.fillStyle = v > 0 && v === maxv ? "var(--ok)" : "var(--accent)";
+    ctx.fillRect(i * (W / hist.length) + 1, H - h, bw, h);
+  });
 }
 
 // ---------- 渲染：canvas 培养皿 ----------
@@ -257,7 +295,7 @@ function rebuildPop(population){
   state.pop.clear();
   for (const p of population){
     state.pop.set(p.name, { name:p.name, age:p.age, born_gen:p.born_gen, parents:p.parents,
-                            alive:true, status:"idle", dead:false, birth:false,
+                            arch:p.arch, alive:true, status:"idle", dead:false, birth:false,
                             lastProduced:null, lastCorrect:null, readout_profile:null });
   }
 }
@@ -267,9 +305,17 @@ async function loadState(){
     const s = await (await fetch("/api/state")).json();
     state.round = Math.max(0, s.round - 1);       // state.round 是"下一回合"计数，显示最后完成回合
     state.config = s.config; state.stats = s.stats;
+    // 服务端 history 预填充曲线 → 打开页面即有历史（最多最近 200 回合）
+    state.correctSeries = []; state.popSeries = []; state.naturalSeries = [];
+    for (const h of (s.history || []).slice(-200)){
+      state.correctSeries.push(h.avg_acc);
+      state.popSeries.push(h.alive);
+      state.naturalSeries.push(h.natural_rate);
+    }
     syncConfigSliders();
     rebuildPop(s.population);
     drawDish(); drawCurves(); updateHeader(); updateStopbar();
+    if (s.stats) drawAgeHist(s.stats.age_hist, s.stats.newborns);
   } catch (err) {
     console.error("加载失败：", err);
     $("#statsLabel").innerHTML = `<b style="color:var(--bad)">⚠ 加载失败：${esc(err.message)}</b>`;
@@ -284,6 +330,7 @@ async function refreshPopulation(){               // 全灭重播后用真实名
     if (s.config){ state.config = s.config; syncConfigSliders(); }
     rebuildPop(s.population);
     updateHeader(); updateStopbar(); drawDish();
+    if (s.stats) drawAgeHist(s.stats.age_hist, s.stats.newborns);
   } catch (err) {
     console.error("刷新种群失败：", err);
   }
@@ -363,7 +410,7 @@ async function replayEvents(events, stats){
   // ---- 4. 新生：加入并短暂绿框，随后归位 ----
   if (births.length){
     for (const b of births){
-      state.pop.set(b.name, { name:b.name, age:0, born_gen:b.gen, parents:b.parents,
+      state.pop.set(b.name, { name:b.name, age:0, born_gen:b.gen, parents:b.parents, arch:b.arch,
                               alive:true, status:"idle", dead:false, birth:true,
                               lastProduced:null, lastCorrect:null, readout_profile:null });
     }
@@ -387,6 +434,7 @@ async function replayEvents(events, stats){
     pushCurves();
   }
   updateHeader(); updateStopbar(); drawCurves(); drawDish();
+  if (state.stats) drawAgeHist(state.stats.age_hist, state.stats.newborns);
   if (state.reseeded){
     await refreshPopulation();
     state.reseeded = false;
@@ -405,12 +453,19 @@ function showAnatomy(name){
   state.selected = name;
   const box = $("#anatomy");
   const profile = g.readout_profile || [];
+  const arch = g.arch || [];
+  const multi = arch.length > 1;
+  const archHtml = arch.length
+    ? `<div class="archrow"><span class="archin">784</span>` +
+      arch.map((n,i) => `<i class="archlay${multi ? " multi" : ""}" title="隐藏层${i+1} · ${n} 神经元">${n}</i>`).join("") +
+      `<span class="archin">10</span></div>`
+    : "";
   const parentHtml = g.parents ? g.parents.map(esc).join(" × ") : "（初始个体）";
   const feedInfo = (g.lastProduced != null)
     ? `吐出 ${g.lastProduced === -1 ? "（没吐出）" : g.lastProduced} ${g.lastCorrect ? "✓" : "✗"}`
     : "本回合未喂食";
-  box.innerHTML = `<b>${esc(name)}</b>
-    <div class="mm">父母：${parentHtml} · 出生第 ${g.born_gen} 回合 · 已活 ${g.age} 回合<br>
+  box.innerHTML = `${archHtml}<b>${esc(name)}</b>
+    <div class="mm">${arch.length ? `架构 ${arch.join(" → ")} → 10<br>` : ""}父母：${parentHtml} · 出生第 ${g.born_gen} 回合 · 已活 ${g.age} 回合<br>
     本回合：${feedInfo}</div>
     <div class="profile">${profile.length
       ? profile.map((v,i) =>
