@@ -188,6 +188,71 @@ def test_server_endpoints():
         server.server_close()
 
 
+def _forward_numpy_reference(genome, pixels, rng):
+    """纯 numpy 参考实现（对照 numba JIT 核心，验证语义一致；仅测试用）。"""
+    B = pixels.shape[0]; T = eco.T
+    S = (rng.random((B, 784, T), dtype=np.float32) < (pixels[:, :, None] * eco.SPIKE_GAIN)).astype(np.float32)
+    Vh = np.zeros((B, eco.HIDDEN_SIZE), np.float32)
+    refh = np.zeros((B, eco.HIDDEN_SIZE), np.int32)
+    Vr = np.zeros((B, eco.READOUT_SIZE), np.float32)
+    refr = np.zeros((B, eco.READOUT_SIZE), np.int32)
+    hc = np.zeros((B, eco.HIDDEN_SIZE), np.int64)
+    rc = np.zeros((B, eco.READOUT_SIZE), np.int64)
+    Wh, Wr = genome.hidden, genome.readout
+    for t in range(T):
+        Vh += S[:, :, t] @ Wh
+        Vh[refh > 0] = 0.0
+        Vh *= eco.LEAK
+        elig = (refh <= 0) & (Vh >= eco.THETA_HIDDEN)
+        fire_rows = np.nonzero(elig.any(axis=1))[0]
+        hspk = np.zeros((B, eco.HIDDEN_SIZE), np.float32)
+        if fire_rows.size:
+            win = np.where(elig, Vh, -np.inf).argmax(axis=1)[fire_rows]
+            Vh[fire_rows] = 0.0
+            was_idle = refh[fire_rows] <= 0
+            refh[fire_rows] = np.where(was_idle, 1, refh[fire_rows])
+            refh[fire_rows, win] = eco.REF_PERIOD
+            hspk[fire_rows, win] = 1.0
+            hc[fire_rows, win] += 1
+        refh = np.maximum(refh - 1, 0)
+        Vr += hspk @ Wr
+        Vr[refr > 0] = 0.0
+        Vr *= eco.LEAK
+        eligr = (refr <= 0) & (Vr >= eco.THETA_READOUT)
+        fire_r = np.nonzero(eligr.any(axis=1))[0]
+        if fire_r.size:
+            winr = np.where(eligr, Vr, -np.inf).argmax(axis=1)[fire_r]
+            Vr[fire_r] = 0.0
+            was_idle_r = refr[fire_r] <= 0
+            refr[fire_r] = np.where(was_idle_r, 1, refr[fire_r])
+            refr[fire_r, winr] = eco.REF_PERIOD
+            rc[fire_r, winr] += 1
+        refr = np.maximum(refr - 1, 0)
+    produced = np.where(rc.sum(axis=1) > 0, rc.argmax(axis=1), -1)
+    return produced, hc, rc
+
+
+def test_numba_matches_reference():
+    """numba forward 与纯 numpy 参考在相同泊松脉冲上应给出几乎一致的 produced。
+
+    用同一 rng seed 两次调用保证 S 相同；浮点累加顺序不同允许个别近平局样本翻转，
+    但整体一致性须 ≥0.9（抓语义级 bug）。
+    """
+    from data_loading import load_mnist
+    ti, tl, _, _ = load_mnist()
+    rng = np.random.default_rng(1)
+    g = eco.random_genome("f2", rng)
+    idx = rng.integers(0, len(ti), 60)
+    pix = ti[idx]
+    p_num, hc_num, rc_num = eco.forward(g, pix, np.random.default_rng(2))
+    p_ref, hc_ref, rc_ref = _forward_numpy_reference(g, pix, np.random.default_rng(2))
+    agree = float((p_num == p_ref).mean())
+    assert agree >= 0.9, f"numba 与 numpy produced 一致性仅 {agree:.2f}（语义疑似偏离）"
+    # 发放计数也应一致（hidden/readout 总发放数相同）
+    assert int(hc_num.sum()) == int(hc_ref.sum()), "隐藏层总发放数不一致"
+    assert int(rc_num.sum()) == int(rc_ref.sum()), "产出层总发放数不一致"
+
+
 if __name__ == "__main__":
     for _name, _fn in sorted(globals().items()):
         if _name.startswith("test_") and callable(_fn):

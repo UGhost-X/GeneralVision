@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import numpy as np
+import numba
 from dataclasses import dataclass
 
 # ---- 游戏参数（v2 回合制） ----
@@ -99,56 +100,107 @@ def death_cause(g: Genome, correct: bool, survival_rounds: int) -> str | None:
     return None
 
 
+@numba.njit(cache=True, inline="always")
+def _forward_core(S: np.ndarray, Wh: np.ndarray, Wr: np.ndarray,
+                  leak: float, theta_h: float, theta_r: float,
+                  ref_period: int, n_t: int
+                  ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """numba JIT 版 LIF 前向核心：逐 b 逐 t 放电。
+
+    S:(B,784,T) float32 泊松脉冲；Wh:(784,n_h) float64；Wr:(n_h,n_r) float64。
+    镜像 numpy forward 语义：累积→不应期清零→漏电→WTA(首个最大者)→发放→不应期递减；
+    产出层随隐藏层发放同步积分+WTA。返回 (produced[B] int64, hc(B,n_h) int64, rc(B,n_r) int64)。
+    """
+    B = S.shape[0]
+    n_in = S.shape[1]
+    n_h = Wh.shape[1]
+    n_r = Wr.shape[1]
+    Vh = np.zeros((B, n_h), dtype=np.float32)
+    refh = np.zeros((B, n_h), dtype=np.int32)
+    Vr = np.zeros((B, n_r), dtype=np.float32)
+    refr = np.zeros((B, n_r), dtype=np.int32)
+    hc = np.zeros((B, n_h), dtype=np.int64)
+    rc = np.zeros((B, n_r), dtype=np.int64)
+    for t in range(n_t):
+        for b in range(B):
+            # 隐藏层：稀疏点积先累进 float64 行（与 numpy 完整 float64 点积一致），再一次性加进 float32 Vh
+            row = np.zeros(n_h, dtype=np.float64)
+            for i in range(n_in):
+                if S[b, i, t] > 0.0:
+                    for j in range(n_h):
+                        row[j] += Wh[i, j]
+            for j in range(n_h):
+                Vh[b, j] += row[j]
+            for j in range(n_h):
+                if refh[b, j] > 0:
+                    Vh[b, j] = 0.0
+                Vh[b, j] *= leak
+            best = -1
+            best_v = -1.0e30
+            for j in range(n_h):
+                if refh[b, j] <= 0 and Vh[b, j] >= theta_h and Vh[b, j] > best_v:
+                    best_v = Vh[b, j]
+                    best = j
+            if best >= 0:
+                for j in range(n_h):
+                    Vh[b, j] = 0.0
+                    if refh[b, j] <= 0:
+                        refh[b, j] = 1
+                refh[b, best] = ref_period
+                hc[b, best] += 1
+                # 产出层：仅当隐藏发放时累加 Wr[best, :]（hspk=onehot(best) @ Wr）
+                for k in range(n_r):
+                    Vr[b, k] += Wr[best, k]
+            # 产出层：每步都对所有行漏电 + 不应期清零 + WTA（与 numpy 一致，不依赖隐藏层是否发放）
+            for k in range(n_r):
+                if refr[b, k] > 0:
+                    Vr[b, k] = 0.0
+                Vr[b, k] *= leak
+            best_r = -1
+            best_vr = -1.0e30
+            for k in range(n_r):
+                if refr[b, k] <= 0 and Vr[b, k] >= theta_r and Vr[b, k] > best_vr:
+                    best_vr = Vr[b, k]
+                    best_r = k
+            if best_r >= 0:
+                for k in range(n_r):
+                    Vr[b, k] = 0.0
+                    if refr[b, k] <= 0:
+                        refr[b, k] = 1
+                refr[b, best_r] = ref_period
+                rc[b, best_r] += 1
+            # 不应期递减（每步对每行执行）
+            for j in range(n_h):
+                if refh[b, j] > 0:
+                    refh[b, j] -= 1
+            for k in range(n_r):
+                if refr[b, k] > 0:
+                    refr[b, k] -= 1
+    produced = np.empty(B, dtype=np.int64)
+    for b in range(B):
+        total = 0
+        bestp = -1
+        bestc = -1
+        for k in range(n_r):
+            total += rc[b, k]
+            if rc[b, k] > bestc:
+                bestc = rc[b, k]
+                bestp = k
+        produced[b] = bestp if total > 0 else -1
+    return produced, hc, rc
+
+
 def forward(genome: Genome, pixels: np.ndarray, rng: np.random.Generator
             ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """pixels: (B,784) ∈[0,1]。返回 (produced, hidden_counts, readout_counts)。
 
-    泊松编码 → 隐藏层 LIF+WTA（无 STDP、无 homeostasis，纯放电）→ 产出层 LIF。
+    泊松编码（numpy 生成脉冲）→ numba JIT 核心（隐藏层 LIF+WTA 无学习 → 产出层 LIF）。
     produced = 产出层累计发放最多的数字；-1 表示整场未发放。
-    逐样本重置 V/refr，与 snn.py step() 语义一致。
     """
     B = pixels.shape[0]
-    # 直接用 float32 生成泊松随机发放，避免 float64 中间数组的双倍内存分配
     S = (rng.random((B, 784, T), dtype=np.float32) < (pixels[:, :, None] * SPIKE_GAIN)).astype(np.float32)
-    Vh = np.zeros((B, HIDDEN_SIZE), np.float32)
-    refh = np.zeros((B, HIDDEN_SIZE), np.int32)
-    Vr = np.zeros((B, READOUT_SIZE), np.float32)
-    refr = np.zeros((B, READOUT_SIZE), np.int32)
-    hc = np.zeros((B, HIDDEN_SIZE), np.int64)
-    rc = np.zeros((B, READOUT_SIZE), np.int64)
-    Wh, Wr = genome.hidden, genome.readout
-    for t in range(T):
-        # ---- 隐藏层 ----
-        Vh += S[:, :, t] @ Wh
-        Vh[refh > 0] = 0.0
-        Vh *= LEAK
-        elig = (refh <= 0) & (Vh >= THETA_HIDDEN)
-        fire_rows = np.nonzero(elig.any(axis=1))[0]
-        hspk = np.zeros((B, HIDDEN_SIZE), np.float32)
-        if fire_rows.size:
-            win = np.where(elig, Vh, -np.inf).argmax(axis=1)[fire_rows]
-            Vh[fire_rows] = 0.0
-            was_idle = refh[fire_rows] <= 0
-            refh[fire_rows] = np.where(was_idle, 1, refh[fire_rows])
-            refh[fire_rows, win] = REF_PERIOD
-            hspk[fire_rows, win] = 1.0
-            hc[fire_rows, win] += 1
-        refh = np.maximum(refh - 1, 0)
-        # ---- 产出层 ----
-        Vr += hspk @ Wr
-        Vr[refr > 0] = 0.0
-        Vr *= LEAK
-        eligr = (refr <= 0) & (Vr >= THETA_READOUT)
-        fire_r = np.nonzero(eligr.any(axis=1))[0]
-        if fire_r.size:
-            winr = np.where(eligr, Vr, -np.inf).argmax(axis=1)[fire_r]
-            Vr[fire_r] = 0.0
-            was_idle_r = refr[fire_r] <= 0
-            refr[fire_r] = np.where(was_idle_r, 1, refr[fire_r])
-            refr[fire_r, winr] = REF_PERIOD
-            rc[fire_r, winr] += 1
-        refr = np.maximum(refr - 1, 0)
-    produced = np.where(rc.sum(axis=1) > 0, rc.argmax(axis=1), -1)
+    produced, hc, rc = _forward_core(S, genome.hidden, genome.readout,
+                                     LEAK, THETA_HIDDEN, THETA_READOUT, REF_PERIOD, T)
     return produced, hc, rc
 
 
