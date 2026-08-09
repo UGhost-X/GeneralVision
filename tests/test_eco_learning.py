@@ -11,6 +11,7 @@ from eco_engine import (
     forward_learn,
     random_genome,
     _phenotype_genomes,
+    _readout_source,
     _sample_spikes,
 )
 
@@ -152,3 +153,51 @@ def test_step_respects_learning_switch(eco):
     for o in eco.population:
         if o.alive and o.uid in before:
             assert np.allclose(before[o.uid], o.learned_weights)
+
+
+def test_readout_source_prefers_learned():
+    wa = np.zeros(100)
+    wb = np.zeros(100)
+    la = np.ones(100)
+    lb = np.ones(100) * 2
+    # 高 fitness 亲本的已学读出层优先
+    assert np.array_equal(_readout_source(1.0, 0.0, wa, wb, la, lb), la)
+    assert np.array_equal(_readout_source(0.0, 1.0, wa, wb, la, lb), lb)
+    # 缺已学时回退到该亲本的基因型权重
+    assert np.array_equal(_readout_source(1.0, 0.0, wa, wb, None, None), wa)
+    assert np.array_equal(_readout_source(0.0, 1.0, wa, wb, None, None), wb)
+
+
+def test_repro_success_uses_smoothed_accuracy(eco):
+    """产错惩罚改用平滑准确率 acc_ema，而非单次对错（消除单数字噪声误杀）。"""
+    eco.reset()
+    alive = [o for o in eco.population if o.alive][:2]
+    a, b = alive
+    a.correct = False
+    b.correct = False
+    a.genome.wrong_tolerance = 1.0
+    b.genome.wrong_tolerance = 1.0
+    a.acc_ema = 0.9
+    b.acc_ema = 0.9
+    p_high = eco._pair_repro_success(a, b)
+    a.acc_ema = 0.1
+    b.acc_ema = 0.1
+    p_low = eco._pair_repro_success(a, b)
+    # 即便本次都产错，平滑准确率高者惩罚更轻
+    assert p_high > p_low
+
+
+def test_repro_success_wrong_tolerance_still_works(eco):
+    eco.reset()
+    alive = [o for o in eco.population if o.alive][:2]
+    a, b = alive
+    a.correct = b.correct = False
+    a.acc_ema = b.acc_ema = 0.1
+    a.genome.wrong_tolerance = 3.0
+    b.genome.wrong_tolerance = 3.0
+    p_tolerant = eco._pair_repro_success(a, b)
+    a.genome.wrong_tolerance = 1.0
+    b.genome.wrong_tolerance = 1.0
+    p_intolerant = eco._pair_repro_success(a, b)
+    # 高错误耐受者繁殖成功率更高
+    assert p_tolerant > p_intolerant
