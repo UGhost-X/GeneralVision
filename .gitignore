@@ -19,3 +19,6 @@ snj_train_log.txt
 
 # 第三方克隆库（spikingjelly 自带 git 历史，以外部依赖引用）
 spikingjelly/
+
+# 本地设计/计划文档（不提交）
+docs/superpowers/
