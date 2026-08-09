@@ -46,8 +46,10 @@ ASSORT_STRENGTH = 0.5
 CAPACITY = 10000
 INIT_POP = 1000
 SELECT_PER_DIGIT = 100
-FOUNDER_CANDIDATE_BATCH = 1000
-FOUNDER_ADD_BATCH = 500
+FITNESS_LAMBDA = 0.5
+SCREEN_POOL_SIZE = 3000
+SCREEN_STEPS = 12
+SCREEN_SAMPLES = 6
 REPRO_SUCCESS_BASE = 0.9
 REPRO_WRONG_PENALTY = 0.4
 NO_REPRO_DEATH_ROUNDS = 3
@@ -933,63 +935,95 @@ class Ecosystem:
             self._next_uid += 1
             self.population.append(organism)
 
+    def _fitness_from_accuracy(self, accuracy: np.ndarray) -> np.ndarray:
+        mean_accuracy = accuracy.mean(axis=1)
+        worst_digit = accuracy.min(axis=1)
+        return mean_accuracy + FITNESS_LAMBDA * worst_digit
+
+    def _score_digits(
+        self,
+        genomes: Sequence[Genome],
+        spikes_cache: Dict[int, Tuple[np.ndarray, np.ndarray]],
+    ) -> np.ndarray:
+        accuracy = np.zeros((len(genomes), 10), dtype=np.float32)
+        for digit, spikes in spikes_cache.items():
+            predictions, _ = forward(genomes, spikes)
+            accuracy[:, digit] = (predictions == digit).astype(np.float32)
+        return accuracy
+
     def _select_founding_specs(
         self,
         per_digit: int,
     ) -> List[Tuple[Genome, int]]:
-        selected: List[Tuple[Genome, int]] = []
-        candidates: List[Genome] = [
-            random_genome(self.rng) for _ in range(FOUNDER_CANDIDATE_BATCH)
-        ]
-        used = np.zeros(len(candidates), dtype=bool)
-        correct_cache: Dict[int, np.ndarray] = {}
+        target = per_digit * 10
+        pool_size = max(SCREEN_POOL_SIZE, target * 3)
         foods = [self._pick_food(digit) for digit in range(10)]
-        spikes_cache = {
+        cheap_spikes = {
             digit: _sample_spikes(
                 np.asarray(food["image"], dtype=np.float32),
                 self.rng,
+                steps=SCREEN_STEPS,
+                samples_per_step=SCREEN_SAMPLES,
+            )
+            for digit, food in enumerate(foods)
+        }
+        full_spikes = {
+            digit: _sample_spikes(
+                np.asarray(food["image"], dtype=np.float32),
+                self.rng,
+                steps=T,
+                samples_per_step=INPUT_SAMPLES_PER_STEP,
             )
             for digit, food in enumerate(foods)
         }
 
+        genomes: List[Genome] = [
+            random_genome(self.rng) for _ in range(pool_size)
+        ]
+        accuracy = self._score_digits(genomes, cheap_spikes)
+        fitness = self._fitness_from_accuracy(accuracy)
+        order = np.argsort(-fitness)
+        used = np.zeros(len(genomes), dtype=bool)
+        selected: List[Tuple[Genome, int]] = []
+        digit_counts = [0] * 10
+
         for digit in range(10):
-            picked = 0
-            while picked < per_digit:
-                if (
-                    digit not in correct_cache
-                    or len(correct_cache[digit]) < len(candidates)
-                ):
-                    start = 0 if digit not in correct_cache else len(
-                        correct_cache[digit]
-                    )
-                    predictions, _ = forward(
-                        candidates[start:],
-                        spikes_cache[digit],
-                    )
-                    new_correct = predictions == digit
-                    if digit in correct_cache:
-                        correct_cache[digit] = np.concatenate(
-                            [correct_cache[digit], new_correct]
-                        )
-                    else:
-                        correct_cache[digit] = new_correct
-
-                available = correct_cache[digit] & ~used
-                for genome_idx in np.flatnonzero(available):
-                    if picked >= per_digit:
+            candidate_indices = [
+                int(idx)
+                for idx in order
+                if not used[int(idx)] and accuracy[int(idx), digit] > 0
+            ]
+            if candidate_indices:
+                full_predictions, _ = forward(
+                    [genomes[idx] for idx in candidate_indices],
+                    full_spikes[digit],
+                )
+                for rank, idx in enumerate(candidate_indices):
+                    if digit_counts[digit] >= per_digit:
                         break
-                    selected.append((candidates[int(genome_idx)], digit))
-                    used[int(genome_idx)] = True
-                    picked += 1
+                    if full_predictions[rank] == digit:
+                        selected.append((genomes[idx], digit))
+                        used[idx] = True
+                        digit_counts[digit] += 1
 
-                if picked < per_digit:
-                    add_size = max(FOUNDER_ADD_BATCH, per_digit * 8)
-                    candidates.extend(
-                        random_genome(self.rng) for _ in range(add_size)
-                    )
-                    used = np.concatenate(
-                        [used, np.zeros(add_size, dtype=bool)]
-                    )
+        for digit in range(10):
+            if digit_counts[digit] >= per_digit:
+                continue
+            remaining = [int(idx) for idx in order if not used[int(idx)]]
+            if not remaining:
+                break
+            full_predictions, _ = forward(
+                [genomes[idx] for idx in remaining],
+                full_spikes[digit],
+            )
+            for rank, idx in enumerate(remaining):
+                if digit_counts[digit] >= per_digit:
+                    break
+                if full_predictions[rank] == digit:
+                    selected.append((genomes[idx], digit))
+                    used[idx] = True
+                    digit_counts[digit] += 1
+
         return selected
 
     def _pick_food(self, digit: Optional[int] = None) -> Dict[str, object]:
