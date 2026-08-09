@@ -45,7 +45,7 @@ CAPACITY = 10000
 INIT_POP = 1000
 SELECT_PER_DIGIT = 100
 FITNESS_LAMBDA = 0.5
-SCREEN_POOL_SIZE = 1500
+SCREEN_POOL_SIZE = 2000
 SCREEN_STEPS = 8
 SCREEN_SAMPLES = 4
 SCREEN_READOUT_SAMPLES_PER_DIGIT = 1
@@ -1147,7 +1147,7 @@ class Ecosystem:
         per_digit: int,
     ) -> List[Tuple[Genome, int]]:
         target = per_digit * 10
-        pool_size = max(SCREEN_POOL_SIZE, target + target // 2)
+        pool_size = max(SCREEN_POOL_SIZE, target * 2)
         foods = [self._pick_food(digit) for digit in range(10)]
         cheap_spikes = {
             digit: _sample_spikes(
