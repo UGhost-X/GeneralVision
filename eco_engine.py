@@ -45,6 +45,9 @@ N_REPRO = 50
 ASSORT_STRENGTH = 0.5
 CAPACITY = 10000
 INIT_POP = 1000
+SELECT_PER_DIGIT = 100
+FOUNDER_CANDIDATE_BATCH = 1000
+FOUNDER_ADD_BATCH = 500
 DENSITY_FLOOR = 0.05
 POP_GROWTH = 0.10
 
@@ -868,6 +871,8 @@ class Ecosystem:
             load_mnist()
         )
         self._warmup_numba()
+        self._founder_specs: List[Tuple[Genome, int]] = []
+        self._founder_per_digit = 0
         self.reset()
 
     def _warmup_numba(self) -> None:
@@ -901,14 +906,90 @@ class Ecosystem:
         self.last_events: Optional[Dict[str, object]] = None
 
     def _seed_population(self, size: int) -> None:
-        for _ in range(size):
+        per_digit = (
+            SELECT_PER_DIGIT if size == INIT_POP else max(1, size // 10)
+        )
+        target = per_digit * 10
+        if (
+            len(self._founder_specs) != target
+            or self._founder_per_digit != per_digit
+        ):
+            self._founder_specs = self._select_founding_specs(per_digit)
+            self._founder_per_digit = per_digit
+
+        for genome, digit in self._founder_specs:
             organism = Organism(
                 uid=self._next_uid,
-                genome=random_genome(self.rng),
+                genome=Genome(
+                    tuple(genome.layer_sizes),
+                    genome.weights.copy(),
+                ),
                 born_round=self.round,
+                correct=True,
+                prediction=digit,
+                last_digit=digit,
             )
             self._next_uid += 1
             self.population.append(organism)
+
+    def _select_founding_specs(
+        self,
+        per_digit: int,
+    ) -> List[Tuple[Genome, int]]:
+        selected: List[Tuple[Genome, int]] = []
+        candidates: List[Genome] = [
+            random_genome(self.rng) for _ in range(FOUNDER_CANDIDATE_BATCH)
+        ]
+        used = np.zeros(len(candidates), dtype=bool)
+        correct_cache: Dict[int, np.ndarray] = {}
+        foods = [self._pick_food(digit) for digit in range(10)]
+        spikes_cache = {
+            digit: _sample_spikes(
+                np.asarray(food["image"], dtype=np.float32),
+                self.rng,
+            )
+            for digit, food in enumerate(foods)
+        }
+
+        for digit in range(10):
+            picked = 0
+            while picked < per_digit:
+                if (
+                    digit not in correct_cache
+                    or len(correct_cache[digit]) < len(candidates)
+                ):
+                    start = 0 if digit not in correct_cache else len(
+                        correct_cache[digit]
+                    )
+                    predictions, _ = forward(
+                        candidates[start:],
+                        spikes_cache[digit],
+                    )
+                    new_correct = predictions == digit
+                    if digit in correct_cache:
+                        correct_cache[digit] = np.concatenate(
+                            [correct_cache[digit], new_correct]
+                        )
+                    else:
+                        correct_cache[digit] = new_correct
+
+                available = correct_cache[digit] & ~used
+                for genome_idx in np.flatnonzero(available):
+                    if picked >= per_digit:
+                        break
+                    selected.append((candidates[int(genome_idx)], digit))
+                    used[int(genome_idx)] = True
+                    picked += 1
+
+                if picked < per_digit:
+                    add_size = max(FOUNDER_ADD_BATCH, per_digit * 8)
+                    candidates.extend(
+                        random_genome(self.rng) for _ in range(add_size)
+                    )
+                    used = np.concatenate(
+                        [used, np.zeros(add_size, dtype=bool)]
+                    )
+        return selected
 
     def _pick_food(self, digit: Optional[int] = None) -> Dict[str, object]:
         if digit is None:
