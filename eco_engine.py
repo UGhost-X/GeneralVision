@@ -1,8 +1,8 @@
 # eco_engine.py（本任务先写：常量、Genome、normalize、random_genome、crossover）
-"""LIF 生态游戏引擎（v2 回合制）：喂食-产出-淘汰-有性繁殖（纯 numpy，一生无学习）。
+"""LIF 生态游戏引擎（v3 回合制）：喂食-产出-淘汰-有性繁殖（纯 numpy，一生无学习）。
 
 生物体 = LIF 网络（784 输入 → 100 隐藏神经元 → 10 产出神经元），所有权重
-出生即随机、一生固定。一回合喂 1 个数字：产出错误的当回合死亡（非自然），
+出生即随机、一生固定。一回合喂 1 个数字：随机淘汰 30%（非自然，不计停止指标），
 活到存活回合数上限自然死亡；存活者按年龄相似度选型配对（可调强度 s）、
 按存活时长加权交叉繁殖，产仔数 × 存活奖励 alpha（1/每回合存活率），
 密度依赖 + 承载力封顶。输出标准化事件流供前端播放。
@@ -506,7 +506,6 @@ class Ecosystem:
         food_pix = self._img[food_idx][None]
         S = (np.random.default_rng(self.round * 1_000_003).random((1, 784, T), dtype=np.float32)
              < (food_pix[:, :, None] * SPIKE_GAIN)).astype(np.float32)
-        accs: dict[str, float] = {}
         for i, g in enumerate(self.pop):
             produced, _hc, rc = forward_from_S(g, S)
             produced = int(produced[0])
@@ -516,14 +515,14 @@ class Ecosystem:
                            "correct": bool(correct), "age": g.age,
                            "readout_profile": rc.mean(axis=0).round(2).tolist()})
             avg_correct += float(correct)
-            accs[g.name] = 1.0 if correct else 0.0
         avg_correct /= max(1, len(self.pop))
 
-        # ---- 淘汰规则（v3）：按正确率排淘汰最差 30%（非自然，不计停止指标）+ 顶部 70% 中 age>存活回合数自然死亡 ----
-        order = sorted(self.pop, key=lambda g: -accs[g.name])
-        n_keep = max(1, round(len(order) * 0.70))                 # 存活顶部 70%
-        bottom_ids = {id(g) for g in order[n_keep:]}              # 最差 30% 非自然死亡
-        aged_ids = {id(g) for g in order[:n_keep] if g.age > self.survival_rounds}  # 顶部高龄自然死亡
+        # ---- 淘汰规则（v3.2）：随机淘汰 30%（非自然，不计停止指标）+ 剩余 70% 中 age>存活回合数自然死亡 ----
+        order = list(self.pop)
+        self.rng.shuffle(order)                                   # 随机洗牌 → 前 70% 存活
+        n_keep = max(1, round(len(order) * 0.70))                 # 随机存活 70%
+        bottom_ids = {id(g) for g in order[n_keep:]}              # 随机 30% 非自然死亡
+        aged_ids = {id(g) for g in order[:n_keep] if g.age > self.survival_rounds}  # 剩余高龄自然死亡
         survivors = [g for g in self.pop if id(g) not in bottom_ids and id(g) not in aged_ids]
         for g in self.pop:
             if id(g) in bottom_ids:

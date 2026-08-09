@@ -80,7 +80,7 @@
 <main>
   <div>
     <canvas id="dish"></canvas>
-    <div class="dishlegend">点击色块查看个体 · 绿=本回合吃对 · 红=本回合吃错 · 灰蓝=存活待喂 · 暗红=吃错淘汰 · 暗金=自然老死 · 死亡回合末即移除</div>
+    <div class="dishlegend">点击色块查看个体 · 绿=本回合吃对 · 红=本回合吃错 · 灰蓝=存活待喂 · 暗红=随机淘汰 · 暗金=自然老死 · 死亡回合末即移除</div>
   </div>
   <aside id="side">
     <div class="panel"><b>环境参数</b>
@@ -252,7 +252,7 @@ function drawDish(){
     const col = i % cols, row = (i/cols)|0;
     const x = ox + col*(cell+gap), y = oy + row*(cell+gap);
     ctx.fillStyle = g.dead
-      ? (g.deadCause === "natural" ? "#7a6a2f" : "#7a1f1f")  // 死亡分色：暗金=自然老死 / 暗红=吃错淘汰
+      ? (g.deadCause === "natural" ? "#7a6a2f" : "#7a1f1f")  // 死亡分色：暗金=自然老死 / 暗红=随机淘汰
       : g.status === "correct" ? "#3fb950"
       : g.status === "wrong" ? "#f85149"
       : "#7c8aa0";                                          // 灰蓝=存活待喂
@@ -413,7 +413,7 @@ async function replayEvents(events, stats){
     for (const b of births){ const g = state.pop.get(b.name); if (g) g.birth = false; }
   }
 
-  // ---- 4. 死亡：按原因着色停留（暗红=吃错淘汰 / 暗金=自然老死） ----
+  // ---- 4. 死亡：按原因着色停留（暗红=随机淘汰 / 暗金=自然老死） ----
   if (deaths.length){
     const nNat = deaths.filter(d => d.cause === "natural").length;
     tip(`☠ 死亡 ${deaths.length} 只（自然 ${nNat} / 淘汰 ${deaths.length - nNat}）`);
