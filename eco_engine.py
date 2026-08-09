@@ -24,6 +24,7 @@ HIDDEN_SIZE = 100
 
 LEAK = 0.94
 THETA_HIDDEN = 12.0
+WTA_K = 6
 
 INPUT_W_SCALE = 0.65
 HIDDEN_W_SCALE = 0.75
@@ -49,6 +50,9 @@ SCREEN_POOL_SIZE = 2000
 SCREEN_STEPS = 8
 SCREEN_SAMPLES = 4
 SCREEN_READOUT_SAMPLES_PER_DIGIT = 1
+CENSUS_EVERY_ROUNDS = 5
+CENSUS_REFIT_TOP = 200
+CENSUS_READOUT_SAMPLES_PER_DIGIT = 5
 READOUT_LAMBDA = 0.1
 P_READOUT_MUTATION = 0.30
 P_READOUT_SPARSE_RESET = 0.05
@@ -562,6 +566,8 @@ def crossover(
     age_a: float,
     age_b: float,
     rng: Optional[np.random.Generator] = None,
+    fitness_a: float = 0.0,
+    fitness_b: float = 0.0,
 ) -> Genome:
     if rng is None:
         rng = np.random.default_rng()
@@ -578,9 +584,12 @@ def crossover(
     layer_sizes = list(donor.layer_sizes)
     flat = donor.weights.copy()
     if tuple(layer_sizes) == other.layer_sizes:
-        if rng.random() < 0.5:
+        readout_donor = (
+            parent_a if fitness_a >= fitness_b else parent_b
+        )
+        if rng.random() < 0.8:
             readout_offset = _output_offset(layer_sizes)
-            flat[readout_offset:] = other.weights[readout_offset:]
+            flat[readout_offset:] = readout_donor.weights[readout_offset:]
         else:
             start = int(rng.integers(0, 2))
             flat[start::2] = other.weights[start::2]
@@ -665,15 +674,16 @@ def _forward_core_multi(
                 for j in range(n):
                     mem[l, j] = LEAK * mem[l, j] + weights[i, bias_start + j]
 
-                best = -1
-                best_val = -1.0
-                for j in range(n):
-                    if mem[l, j] >= THETA_HIDDEN and mem[l, j] > best_val:
-                        best = j
-                        best_val = mem[l, j]
-                if best >= 0:
-                    spk[l, best] = 1.0
-                    mem[l, best] = 0.0
+                for _ in range(WTA_K):
+                    best = -1
+                    best_val = -1.0
+                    for j in range(n):
+                        if mem[l, j] >= THETA_HIDDEN and mem[l, j] > best_val:
+                            best = j
+                            best_val = mem[l, j]
+                    if best >= 0:
+                        spk[l, best] = 1.0
+                        mem[l, best] = 0.0
 
             last_n = sizes[i, depth - 1]
             for p in range(last_n):
@@ -761,11 +771,20 @@ def _stack_genome_group(
 
 def _vectorized_wta(mem: np.ndarray) -> np.ndarray:
     fire = mem >= THETA_HIDDEN
-    best = np.argmax(np.where(fire, mem, -1e9), axis=1)
     spk = np.zeros_like(mem)
-    rows = np.flatnonzero(fire.any(axis=1))
-    spk[rows, best[rows]] = 1.0
-    mem[rows, best[rows]] = 0.0
+    k = min(WTA_K, mem.shape[1])
+    top = np.argpartition(
+        np.where(fire, mem, -1e9),
+        -k,
+        axis=1,
+    )[:, -k:]
+    flat_rows = np.repeat(np.arange(mem.shape[0]), k)
+    flat_cols = top.ravel()
+    active = fire[flat_rows, flat_cols]
+    selected_rows = flat_rows[active]
+    selected_cols = flat_cols[active]
+    spk[selected_rows, selected_cols] = 1.0
+    mem[selected_rows, selected_cols] = 0.0
     return spk
 
 
@@ -973,6 +992,8 @@ class Organism:
     last_digit: int = -1
     digit_preference: int = -1
     failed_repro_rounds: int = 0
+    fitness: float = 0.0
+    digit_accuracies: List[float] = field(default_factory=list)
 
     def to_dict(self, include_weights: bool = False) -> Dict[str, object]:
         data = {
@@ -993,6 +1014,8 @@ class Organism:
             "fecundity": self.genome.fecundity,
             "wrong_tolerance": self.genome.wrong_tolerance,
             "mutation_rate": self.genome.mutation_rate,
+            "fitness": self.fitness,
+            "digit_accuracies": self.digit_accuracies,
         }
         if include_weights:
             data["weights"] = self.genome.weights.tolist()
@@ -1094,16 +1117,79 @@ class Ecosystem:
             accuracy[:, digit] = (predictions == digit).astype(np.float32)
         return accuracy
 
-    def _fit_readouts(self, genomes: Sequence[Genome]) -> None:
+    def _run_census(self) -> Dict[str, object]:
+        alive = [o for o in self.population if o.alive]
+        if not alive:
+            return {
+                "census_round": self.round,
+                "census_population": 0,
+                "mean_fitness": 0.0,
+                "best_fitness": 0.0,
+            }
+
+        foods = [self._pick_food(digit) for digit in range(10)]
+        spikes_cache = {
+            digit: _sample_spikes(
+                np.asarray(food["image"], dtype=np.float32),
+                self.rng,
+            )
+            for digit, food in enumerate(foods)
+        }
+        genomes = [organism.genome for organism in alive]
+        accuracy = self._score_digits(genomes, spikes_cache)
+        fitness = self._fitness_from_accuracy(accuracy)
+        for i, organism in enumerate(alive):
+            organism.fitness = float(fitness[i])
+            organism.digit_accuracies = [
+                float(value) for value in accuracy[i]
+            ]
+
+        order = np.argsort(-fitness)
+        top_count = min(CENSUS_REFIT_TOP, len(alive))
+        top_indices = order[:top_count]
+        top_organisms = [alive[int(i)] for i in top_indices]
+        self._fit_readouts(
+            [organism.genome for organism in top_organisms],
+            samples_per_digit=CENSUS_READOUT_SAMPLES_PER_DIGIT,
+        )
+        top_accuracy = self._score_digits(
+            [organism.genome for organism in top_organisms],
+            spikes_cache,
+        )
+        top_fitness = self._fitness_from_accuracy(top_accuracy)
+        for i, organism in enumerate(top_organisms):
+            organism.fitness = float(top_fitness[i])
+            organism.digit_accuracies = [
+                float(value) for value in top_accuracy[i]
+            ]
+
+        fitness_values = [organism.fitness for organism in alive]
+        return {
+            "census_round": self.round,
+            "census_population": len(alive),
+            "mean_fitness": float(np.mean(fitness_values)),
+            "best_fitness": float(np.max(fitness_values)),
+        }
+
+    def _fit_readouts(
+        self,
+        genomes: Sequence[Genome],
+        samples_per_digit: Optional[int] = None,
+    ) -> None:
         if not genomes:
             return
+        per_digit = (
+            samples_per_digit
+            if samples_per_digit is not None
+            else SCREEN_READOUT_SAMPLES_PER_DIGIT
+        )
         sample_indices: List[int] = []
         sample_labels: List[int] = []
         for digit in range(10):
             candidates = np.flatnonzero(self._train_labels == digit)
             chosen = self.rng.choice(
                 candidates,
-                size=min(SCREEN_READOUT_SAMPLES_PER_DIGIT, len(candidates)),
+                size=min(per_digit, len(candidates)),
                 replace=False,
             )
             sample_indices.extend(int(i) for i in chosen)
@@ -1263,6 +1349,8 @@ class Ecosystem:
         rng.shuffle(remaining)
         pairs: List[Tuple[Organism, Organism]] = []
         max_age = max(1.0, float(max((o.age for o in remaining), default=1)))
+        fitness_values = [o.fitness for o in remaining]
+        fitness_range = max(1.0, float(max(fitness_values) - min(fitness_values)))
 
         while len(remaining) >= 2:
             first = remaining.pop(0)
@@ -1276,7 +1364,12 @@ class Ecosystem:
                     if first.digit_preference == second.digit_preference
                     else 1.0
                 )
-                mate_score = 0.5 * age_sim + 0.5 * digit_bonus
+                fitness_sim = 1.0 - abs(first.fitness - second.fitness) / fitness_range
+                mate_score = (
+                    0.35 * age_sim
+                    + 0.35 * digit_bonus
+                    + 0.30 * fitness_sim
+                )
                 score = (1.0 - strength) * rng.random() + strength * mate_score
                 scores.append(max(score, 1e-6))
             scores = np.asarray(scores, dtype=np.float64)
@@ -1290,7 +1383,9 @@ class Ecosystem:
         return pairs
 
     def _pair_repro_success(self, first: Organism, second: Organism) -> float:
-        probability = REPRO_SUCCESS_BASE
+        mean_fitness = 0.5 * (first.fitness + second.fitness)
+        fitness_factor = 0.75 + 0.25 * min(1.0, max(0.0, mean_fitness))
+        probability = REPRO_SUCCESS_BASE * fitness_factor
         if not first.correct:
             tolerance = max(0.1, first.genome.wrong_tolerance)
             probability *= REPRO_WRONG_PENALTY ** (1.0 / tolerance)
@@ -1314,6 +1409,8 @@ class Ecosystem:
             fecundity = (
                 first.genome.fecundity * second.genome.fecundity
             )
+            mean_fitness = 0.5 * (first.fitness + second.fitness)
+            fitness_factor = 0.75 + 0.25 * min(1.0, max(0.0, mean_fitness))
             raw_weights.append(
                 max(
                     1,
@@ -1323,6 +1420,7 @@ class Ecosystem:
                         * alpha
                         * density_factor
                         * fecundity
+                        * fitness_factor
                     ),
                 )
             )
@@ -1484,6 +1582,8 @@ class Ecosystem:
                             first.age,
                             second.age,
                             self.rng,
+                            first.fitness,
+                            second.fitness,
                         ),
                         born_round=self.round,
                         digit_preference=(
@@ -1507,6 +1607,10 @@ class Ecosystem:
                 no_repro_deaths.append(organism)
 
         survivors_alive = [o for o in survivors if o.alive]
+
+        census_events: Dict[str, object] = {}
+        if self.round % CENSUS_EVERY_ROUNDS == 0:
+            census_events = self._run_census()
 
         self.cumulative_total_deaths += len(natural_deaths) + len(
             no_repro_deaths
@@ -1560,6 +1664,7 @@ class Ecosystem:
                     for o in survivors_alive
                 ],
                 "stopped": self.stopped,
+                **census_events,
             }
         )
         self._record_history(events)

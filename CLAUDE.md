@@ -84,11 +84,11 @@ Standalone script that batch-compresses images > 2MB in a hardcoded target direc
 
 ### 回合制规则（v3）
 
-一回合 = 喂 1 个随机数字给全部存活者 → 各自产出 → **产错不立即死亡**，而是降低本回合繁殖成功概率；**连续 3 回合未繁殖成功则立即死亡** + 未死但 `age > 存活回合数上限` **自然死亡**（计停止指标）→ 存活者**选型交配**（年龄相似度高优先，且更倾向与自身数字偏好不同的个体配对）+ 存活加权交叉繁殖 → 密度依赖 + **承载力封顶**（繁殖目标使用 `N_REPRO × alpha` 计算，默认可超过 1000，但受 `REPRO_GROWTH_DIVISOR=30` 和承载力约束）→ 结算。**停止条件**：累计自然死亡/总死亡 ≥ 95%（随机权重下基本不可达）；某回合全员死亡则复用筛选出的初始奠基个体全灭重播。
+一回合 = 喂 1 个随机数字给全部存活者 → 各自产出 → **产错不立即死亡**，而是降低本回合繁殖成功概率；**连续 3 回合未繁殖成功则立即死亡** + 未死但 `age > 存活回合数上限` **自然死亡**（计停止指标）→ 存活者**选型交配**（年龄、跨数字偏好、fitness 综合加权）+ 存活加权交叉繁殖 → 密度依赖 + **承载力封顶**（繁殖目标使用 `N_REPRO × alpha` 计算，默认可超过 1000，但受 `REPRO_GROWTH_DIVISOR=30` 和承载力约束）→ **每 5 回合执行全数字体检**：喂 0-9 更新 fitness，并对 top 个体重拟合读出层 → 结算。**停止条件**：累计自然死亡/总死亡 ≥ 95%（随机权重下基本不可达）；某回合全员死亡则复用筛选出的初始奠基个体全灭重播。
 
 ### 关键常量（eco_engine.py 顶部）
 
-`T=40`（仿真步数）、`INPUT_SAMPLES_PER_STEP=12`（每步采样的像素数）、`HIDDEN_SIZE=100`、`LEAK=0.94`、`THETA_HIDDEN=12.0`、`SURVIVAL_ROUNDS=20`（自然寿命）、`N_REPRO=50`（繁殖倍数）、`ASSORT_STRENGTH=0.5`（选型强度默认）、`CAPACITY=10000`（承载力）、`INIT_POP=1000`（初始/重播种群）、`SELECT_PER_DIGIT=100`（每个数字筛出的初始个体数）、`SCREEN_POOL_SIZE=2000`（全数字筛候选池）、`SCREEN_STEPS=8`、`SCREEN_SAMPLES=4`、`SCREEN_READOUT_SAMPLES_PER_DIGIT=1`、`READOUT_LAMBDA=0.1`、`FITNESS_LAMBDA=0.5`、`P_READOUT_MUTATION=0.30`、`P_READOUT_SPARSE_RESET=0.05`、`TRAIT_MUTATION_RATE=0.25`、`REPRO_SUCCESS_BASE=0.9`、`REPRO_WRONG_PENALTY=0.4`、`NO_REPRO_DEATH_ROUNDS=3`、`REPRO_GROWTH_DIVISOR=30`、`DENSITY_FLOOR=0.05`、`POP_GROWTH=0.10`（每回合净增长率，密度加权）；产错不立即死亡，结构突变概率 `P_GROW=0.40 / P_SPLIT=0.15 / P_MERGE=0.10 / P_PRUNE=0.10 / P_ADDRANDOM=0.03`，层数 1-4、每层 20-200、总隐藏 ≤400。
+`T=40`（仿真步数）、`INPUT_SAMPLES_PER_STEP=12`（每步采样的像素数）、`HIDDEN_SIZE=100`、`LEAK=0.94`、`THETA_HIDDEN=12.0`、`WTA_K=6`（每层 top-k 脉冲数）、`SURVIVAL_ROUNDS=20`（自然寿命）、`N_REPRO=50`（繁殖倍数）、`ASSORT_STRENGTH=0.5`（选型强度默认）、`CAPACITY=10000`（承载力）、`INIT_POP=1000`（初始/重播种群）、`SELECT_PER_DIGIT=100`（每个数字筛出的初始个体数）、`SCREEN_POOL_SIZE=2000`（全数字筛候选池）、`SCREEN_STEPS=8`、`SCREEN_SAMPLES=4`、`SCREEN_READOUT_SAMPLES_PER_DIGIT=1`、`CENSUS_EVERY_ROUNDS=5`、`CENSUS_REFIT_TOP=200`、`CENSUS_READOUT_SAMPLES_PER_DIGIT=5`、`READOUT_LAMBDA=0.1`、`FITNESS_LAMBDA=0.5`、`P_READOUT_MUTATION=0.30`、`P_READOUT_SPARSE_RESET=0.05`、`TRAIT_MUTATION_RATE=0.25`、`REPRO_SUCCESS_BASE=0.9`、`REPRO_WRONG_PENALTY=0.4`、`NO_REPRO_DEATH_ROUNDS=3`、`REPRO_GROWTH_DIVISOR=30`、`DENSITY_FLOOR=0.05`、`POP_GROWTH=0.10`（每回合净增长率，密度加权）；产错不立即死亡，结构突变概率 `P_GROW=0.40 / P_SPLIT=0.15 / P_MERGE=0.10 / P_PRUNE=0.10 / P_ADDRANDOM=0.03`，层数 1-4、每层 20-200、总隐藏 ≤400。
 
 ### 最近更新（2026-08-09）
 
@@ -101,6 +101,7 @@ Standalone script that batch-compresses images > 2MB in a hardcoded target direc
 - 繁殖规则更新：产错不再立即死亡，改为降低配对繁殖成功概率；连续 3 回合未繁殖成功死亡；配对更倾向跨数字偏好；繁殖目标使用 N 与 alpha，默认种群可超过 1000 且仍保持单回合约 1 秒内。
 - 线性读出层已接入：LIF 隐藏层脉冲率作为特征，输出改为 `hidden_rate @ readout_weights + readout_bias`；初始筛选会为奠基个体拟合轻量岭回归读出权重。
 - 新增遗传性状与变异：`longevity_bonus`（寿命）、`fecundity`（繁殖力）、`wrong_tolerance`（错误耐受）、`mutation_rate`（变异率）；同架构交叉时可整段交换读出层，读出走小扰动/稀疏重置变异，前端解剖面板已展示这些性状。
+- 已加入全数字定期体检与读出层重拟合：每 5 回合喂 0-9 更新每个体的 `fitness`，对 top 200 个体用每数字 5 个训练样本重拟合读出层；fitness 会进入配对、繁殖成功率和产仔权重，同架构交叉默认继承高 fitness 亲本的读出层。
 
 
 

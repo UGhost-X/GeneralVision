@@ -756,6 +756,8 @@
           <div class="cell"><span>繁殖力</span><strong id="inspectFecundity"></strong></div>
           <div class="cell"><span>错误耐受</span><strong id="inspectTolerance"></strong></div>
           <div class="cell"><span>突变率</span><strong id="inspectMutation"></strong></div>
+          <div class="cell"><span>全数字Fitness</span><strong id="inspectFitness"></strong></div>
+          <div class="cell"><span>最差数字</span><strong id="inspectWorstDigit"></strong></div>
         </div>
         <div class="arch" id="arch">${buildArchSvg(organism.layer_sizes)}</div>
       `;
@@ -774,6 +776,11 @@
       $("inspectFecundity").textContent = (organism.fecundity || 1).toFixed(2);
       $("inspectTolerance").textContent = (organism.wrong_tolerance || 1).toFixed(2);
       $("inspectMutation").textContent = (organism.mutation_rate || 1).toFixed(2);
+      $("inspectFitness").textContent = (organism.fitness || 0).toFixed(3);
+      const accuracies = organism.digit_accuracies || [];
+      $("inspectWorstDigit").textContent = accuracies.length
+        ? `${accuracies.indexOf(Math.min(...accuracies))}:${Math.min(...accuracies).toFixed(2)}`
+        : "-";
     }
 
     function renderAll() {
