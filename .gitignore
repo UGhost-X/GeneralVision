@@ -10,6 +10,8 @@ checkpoints/
 evolution_curves.png
 snn_weights.js
 mnist_weights.json
+snj_online_curve.png
+snj_train_log.txt
 
 # Claude Code 本地配置
 .claude/

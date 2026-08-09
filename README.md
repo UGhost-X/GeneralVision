@@ -242,3 +242,24 @@ fitness = 读出准确率 + w_sparse × 稀疏奖励 − w_compact × (神经元
 
 与 STDP 进化系统（evolve.py）的区别：本游戏是纯权重遗传进化（无 STDP/无学习），
 STDP 系统是架构进化 + 一生 STDP 自学。两者独立共存。
+
+---
+
+## 在线学习原型（SpikingJelly，运行中实时更新权重）
+
+`snj_online_mnist.py` — 用 [SpikingJelly](https://github.com/fangwei123456/spikingjelly)（PyTorch 原生 SNN 框架）搭建的**在运行中就能更新权重**的类脑模型：
+OTTT（Online Training Through Time）在线梯度训练。一张图的脉冲序列一个时间步一个时间步喂入，
+**每个时间步都执行 前向→算损失→反向→更新权重**，无独立训练阶段；网络一边推理一边实时学习。
+
+- 架构：`784 → 128/256 LIF → 10 LIF`，全部 `OTTTLIFNode` + `OTTTSequential`，泊松编码，T 个时间步。
+- 数据：直接读 `data/MNIST/raw/` 的 idx3/idx1 二进制，不依赖 torchvision。
+- 结果（实测）：10 类 MNIST，GPU，1000 个在线样本即从 9.6%（随机）到 **85%**；0/1 二分类 600 样本到 **100%**。
+- 依赖：`uv pip install --python .venv/Scripts/python.exe tensorboard`（SpikingJelly v2 要求 Python≥3.11，但本项目 3.10 venv 实测核心模块可导入）；`spikingjelly/` 为克隆库已 gitignore，脚本内会自动加入 sys.path 回退导入。
+
+```bash
+python snj_online_mnist.py --quick          # 快速验证（1000 样本）
+python snj_online_mnist.py --samples 15000  # 完整在线训练
+```
+
+学习曲线输出到 `snj_online_curve.png`。与生态游戏的区别：本原型补上了生态游戏缺失的"个体一生中学习权重"——
+mSTDP（奖励调制）与 OTTT（在线梯度）可分别对接游戏的 fitness 信号与监督读出。
