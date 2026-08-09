@@ -81,6 +81,8 @@
         <input type="range" id="c_survival" min="10" max="30" value="20"></div>
       <div class="cfgrow"><label>繁殖倍数 N <span id="v_nrepro">50</span></label>
         <input type="range" id="c_nrepro" min="10" max="100" value="50"></div>
+      <div class="cfgrow"><label>选型强度 s <span id="v_assort">50</span></label>
+        <input type="range" id="c_assort" min="0" max="100" step="5" value="50"></div>
       <div class="cfgrow"><label>承载力 <span id="v_capacity">500</span></label>
         <input type="range" id="c_capacity" min="100" max="5000" step="100" value="500"></div>
       <div class="cfgrow"><label>初始种群 <span id="v_initial">60</span></label>
@@ -126,7 +128,9 @@ function updateHeader(){
   const s = state.stats;
   if (!s){ $("#statsLabel").textContent = "加载中…"; return; }
   const acc = (s.avg_acc != null) ? (s.avg_acc*100).toFixed(1)+"%" : "—";
-  $("#statsLabel").innerHTML = `种群 <b>${s.alive}</b> · 本回合正确率 <b>${acc}</b> · 自然死亡 <b>${(s.natural_rate*100).toFixed(1)}%</b>`;
+  const sr = (s.survival_rate != null) ? (s.survival_rate*100).toFixed(1)+"%" : "—";
+  const al = (s.alpha != null) ? "α "+s.alpha.toFixed(1) : "—";
+  $("#statsLabel").innerHTML = `种群 <b>${s.alive}</b> · 正确率 <b>${acc}</b> · 存活率 <b>${sr}</b> · ${al}`;
 }
 
 function updateStopbar(){
@@ -239,11 +243,13 @@ function drawDigitCanvas(cv, pixels, scale){
 function syncConfigSliders(){
   const c = state.config; if (!c) return;
   const map = { c_survival:["survival_rounds","v_survival"], c_nrepro:["n_repro","v_nrepro"],
-                c_capacity:["capacity","v_capacity"], c_initial:["initial_pop","v_initial"] };
+                c_capacity:["capacity","v_capacity"], c_initial:["initial_pop","v_initial"],
+                c_assort:["assort_strength","v_assort",100] };   // 第 3 元 = 显示缩放（0-1 → 0-100）
   for (const id in map){
-    const [key, vlabel] = map[id];
-    document.getElementById(id).value = c[key];
-    document.getElementById(vlabel).textContent = c[key];
+    const [key, vlabel, scale] = map[id];
+    const v = (scale || 1) * c[key];
+    document.getElementById(id).value = v;
+    document.getElementById(vlabel).textContent = Math.round(v);
   }
 }
 
@@ -499,12 +505,12 @@ function bindControls(){
   });
 }
 
-function bindConfig(id, key, vlabel){
+function bindConfig(id, key, vlabel, scale){
   const el = document.getElementById(id);
   el.addEventListener("input", () => {
     document.getElementById(vlabel).textContent = el.value;
     clearTimeout(el._t);                           // 拖拽防抖
-    el._t = setTimeout(() => postConfig({[key]: +el.value}), 250);   // JSON 数字
+    el._t = setTimeout(() => postConfig({[key]: +el.value / (scale || 1)}), 250);   // JSON 数字（assort 0-100 → 0-1）
   });
 }
 
@@ -531,6 +537,7 @@ async function postConfig(patch){
   }
   bindConfig("c_survival","survival_rounds","v_survival");
   bindConfig("c_nrepro","n_repro","v_nrepro");
+  bindConfig("c_assort","assort_strength","v_assort",100);
   bindConfig("c_capacity","capacity","v_capacity");
   bindConfig("c_initial","initial_pop","v_initial");
   bindControls();
