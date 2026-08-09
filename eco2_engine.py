@@ -322,3 +322,39 @@ def mark_deaths(energy: torch.Tensor, age: torch.Tensor, cfg: Eco2Config) -> tor
     if cfg.age_max is not None:
         starved = starved | (age >= cfg.age_max)
     return starved
+
+
+# --------------------------------------------------------------------------- #
+# 繁殖 + 拉马克混合遗传（Task 4）
+# --------------------------------------------------------------------------- #
+def lamarckism_blend(parent_w: List[torch.Tensor], genome: Genome, rng,
+                     cfg: Eco2Config) -> List[torch.Tensor]:
+    """拉马克混合：w_child = lamarckism×w_parent + (1-lamarckism)×w_random + 噪声"""
+    lam = float(genome.lamarckism)
+    child: List[torch.Tensor] = []
+    for w in parent_w:
+        w_random = torch.from_numpy(
+            rng.normal(size=w.shape).astype(np.float32) * cfg.w_init_scale
+        ).to(w.device)
+        noise = torch.randn_like(w) * cfg.mutation_noise
+        w_child = lam * w + (1.0 - lam) * w_random + noise
+        w_child.clamp_(cfg.w_min, cfg.w_max)
+        child.append(w_child)
+    return child
+
+
+def reproduce(parents: List[Organism], rng: np.random.Generator,
+              cfg: Eco2Config, uid_counter: List[int]) -> List[Organism]:
+    """亲代能量已 >= repro_threshold 才被调用。每个亲代付代价，产 fecundity 个子代。"""
+    children: List[Organism] = []
+    for p in parents:
+        p.energy -= cfg.repro_cost
+        for _ in range(p.genome.fecundity):
+            g_child = mutate_genome(p.genome, rng)
+            w_child = lamarckism_blend(p.weights, p.genome, rng, cfg)
+            children.append(Organism(
+                uid=uid_counter[0], genome=g_child, energy=cfg.e_birth, age=0,
+                alive=True, weights=w_child,
+            ))
+            uid_counter[0] += 1
+    return children

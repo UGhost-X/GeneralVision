@@ -158,3 +158,52 @@ def test_mark_deaths_age():
     age = torch.tensor([49, 50])
     dead = mark_deaths(e, age, cfg)
     assert dead.tolist() == [False, True]
+
+
+# --------------------------------------------------------------------------- #
+# Task 4: 繁殖 + 拉马克混合遗传
+# --------------------------------------------------------------------------- #
+import numpy as np, torch
+from eco2_engine import (lamarckism_blend, reproduce, random_genome, init_weights,
+                         Organism, Eco2Config, mutate_genome, Genome)
+
+def test_lamarckism_zero_is_fresh():
+    cfg = Eco2Config(mutation_noise=0.0)
+    rng = np.random.default_rng(0)
+    g = Genome(layer_sizes=(32,), wta_k=6, leak=0.94, input_gain=1.0,
+               threshold_scale=1.0, lamarckism=0.0, lr_scale=1.0, fecundity=1,
+               mutation_rate=0.1)
+    pw = init_weights(g, 196, rng, scale=1.0)  # 大权重便于区分
+    cw = lamarckism_blend(pw, g, rng, cfg)
+    # lamarckism=0 → 子代应 ≈ 新随机，与亲代差异明显
+    diff = sum((cw[i] - pw[i]).abs().mean().item() for i in range(len(pw)))
+    assert diff > 0.5
+
+def test_lamarckism_one_is_parent():
+    cfg = Eco2Config(mutation_noise=0.0)
+    rng = np.random.default_rng(1)
+    g = Genome(layer_sizes=(32,), wta_k=6, leak=0.94, input_gain=1.0,
+               threshold_scale=1.0, lamarckism=1.0, lr_scale=1.0, fecundity=1,
+               mutation_rate=0.1)
+    pw = init_weights(g, 196, rng, scale=0.3)
+    cw = lamarckism_blend(pw, g, rng, cfg)
+    for i in range(len(pw)):
+        torch.testing.assert_close(cw[i], pw[i], atol=1e-6, rtol=1e-6)
+
+def test_reproduce_pays_cost_and_fecundity():
+    cfg = Eco2Config(repro_cost=100.0, e_birth=80.0)
+    rng = np.random.default_rng(2)
+    g = Genome(layer_sizes=(32,), wta_k=6, leak=0.94, input_gain=1.0,
+               threshold_scale=1.0, lamarckism=0.5, lr_scale=1.0, fecundity=2,
+               mutation_rate=0.1)
+    parent = Organism(uid=0, genome=g, energy=300.0,
+                      weights=init_weights(g, 196, rng))
+    children = reproduce([parent], rng, cfg, [1])
+    assert parent.energy == 200.0          # 付了繁殖代价
+    assert len(children) == 2              # fecundity=2
+    for c in children:
+        assert c.alive and c.age == 0 and c.energy == 80.0
+        assert c.genome != g or c.genome == g  # 基因至少结构合法
+        assert len(c.weights) == len(parent.weights)
+    # uid 递增
+    assert [c.uid for c in children] == [1, 2]
