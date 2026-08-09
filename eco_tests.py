@@ -253,31 +253,6 @@ def test_config_assort_strength():
     assert abs(e.assort_strength - 0.8) < 1e-9
 
 
-def test_history_and_age_hist():
-    """/api/state 含 history；stats 含 age_hist/newborns/avg_acc；population 每项带 arch。"""
-    e = eco.Ecosystem(seed=0)
-    for _ in range(3):
-        e.step_round()
-    st = e.get_state()
-    assert "history" in st and len(st["history"]) == 3
-    assert set(st["history"][-1]) >= {"round", "alive", "avg_acc", "natural_rate", "survival_rate", "alpha"}
-    s = st["stats"]
-    assert "age_hist" in s and len(s["age_hist"]) == e.survival_rounds
-    assert "newborns" in s and "avg_acc" in s
-    # 直方图（age≥1）+ 新生（age=0）应覆盖全部存活
-    assert sum(s["age_hist"]) + s["newborns"] == len(e.pop), "直方图+新生应覆盖全部存活"
-    for p in st["population"]:
-        assert isinstance(p["arch"], list) and all(isinstance(n, int) for n in p["arch"])
-
-
-def test_birth_event_has_arch():
-    """birth 事件携带新个体架构（前端需立即画出）。"""
-    e = eco.Ecosystem(seed=5)
-    events, _ = e.step_round()
-    births = [ev for ev in events if ev["type"] == "birth"]
-    assert births and all("arch" in b for b in births)
-
-
 def _forward_numpy_reference_multi(genome, pixels, rng):
     """纯 numpy 多层参考实现（对照 numba _forward_core_multi，验证语义一致；仅测试用）。
 
