@@ -752,6 +752,10 @@
           <div class="cell"><span>判断</span><strong id="inspectCorrect"></strong></div>
           <div class="cell"><span>权重数</span><strong id="inspectWeights"></strong></div>
           <div class="cell"><span>隐藏层</span><strong id="inspectDepth"></strong></div>
+          <div class="cell"><span>Top-K</span><strong id="inspectWta"></strong></div>
+          <div class="cell"><span>漏电率</span><strong id="inspectLeak"></strong></div>
+          <div class="cell"><span>输入增益</span><strong id="inspectGain"></strong></div>
+          <div class="cell"><span>阈值缩放</span><strong id="inspectTheta"></strong></div>
           <div class="cell"><span>寿命加成</span><strong id="inspectLongevity"></strong></div>
           <div class="cell"><span>繁殖力</span><strong id="inspectFecundity"></strong></div>
           <div class="cell"><span>错误耐受</span><strong id="inspectTolerance"></strong></div>
@@ -772,6 +776,10 @@
       $("inspectCorrect").style.color = organism.correct ? "#16845a" : "#c33a3a";
       $("inspectWeights").textContent = organism.weights_size;
       $("inspectDepth").textContent = organism.layer_sizes.length;
+      $("inspectWta").textContent = organism.wta_k || "-";
+      $("inspectLeak").textContent = organism.leak ? organism.leak.toFixed(3) : "-";
+      $("inspectGain").textContent = organism.input_gain ? organism.input_gain.toFixed(2) : "-";
+      $("inspectTheta").textContent = organism.threshold_scale ? organism.threshold_scale.toFixed(2) : "-";
       $("inspectLongevity").textContent = organism.longevity_bonus || 0;
       $("inspectFecundity").textContent = (organism.fecundity || 1).toFixed(2);
       $("inspectTolerance").textContent = (organism.wrong_tolerance || 1).toFixed(2);

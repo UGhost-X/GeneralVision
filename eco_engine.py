@@ -38,6 +38,15 @@ P_MERGE = 0.10
 P_PRUNE = 0.10
 P_ADDRANDOM = 0.03
 BIG_MUTATION_RATE = 0.001
+P_STRUCT_MUTATION = 0.45
+WTA_K_MIN = 1
+WTA_K_MAX = 12
+LEAK_MIN = 0.80
+LEAK_MAX = 0.99
+INPUT_GAIN_MIN = 0.5
+INPUT_GAIN_MAX = 3.0
+THETA_SCALE_MIN = 0.5
+THETA_SCALE_MAX = 2.0
 
 SURVIVAL_ROUNDS = 20
 N_REPRO = 50
@@ -147,6 +156,10 @@ class Genome:
     fecundity: float = 1.0
     wrong_tolerance: float = 1.0
     mutation_rate: float = 1.0
+    wta_k: int = WTA_K
+    leak: float = LEAK
+    input_gain: float = 1.0
+    threshold_scale: float = 1.0
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -156,6 +169,10 @@ class Genome:
             "fecundity": self.fecundity,
             "wrong_tolerance": self.wrong_tolerance,
             "mutation_rate": self.mutation_rate,
+            "wta_k": self.wta_k,
+            "leak": self.leak,
+            "input_gain": self.input_gain,
+            "threshold_scale": self.threshold_scale,
         }
 
 
@@ -205,6 +222,12 @@ def random_genome(rng: Optional[np.random.Generator] = None) -> Genome:
         fecundity=float(rng.uniform(0.8, 1.2)),
         wrong_tolerance=float(rng.uniform(0.8, 1.2)),
         mutation_rate=float(rng.uniform(0.8, 1.2)),
+        wta_k=int(rng.integers(2, 10)),
+        leak=float(np.clip(LEAK + rng.normal(0.0, 0.02), 0.80, 0.99)),
+        input_gain=float(np.clip(1.0 + rng.normal(0.0, 0.20), 0.5, 2.5)),
+        threshold_scale=float(
+            np.clip(1.0 + rng.normal(0.0, 0.15), 0.6, 1.8)
+        ),
     )
 
 
@@ -490,11 +513,18 @@ def _mutate_genome(genome: Genome, rng: np.random.Generator) -> Genome:
         1.0, (P_READOUT_MUTATION + P_READOUT_SPARSE_RESET) * mutation_rate
     )
     trait_mutation = rng.random() < TRAIT_MUTATION_RATE
+    structural_mutation = rng.random() < min(
+        1.0, P_STRUCT_MUTATION * mutation_rate
+    )
 
     longevity_bonus = int(genome.longevity_bonus)
     fecundity = float(genome.fecundity)
     wrong_tolerance = float(genome.wrong_tolerance)
     next_mutation_rate = float(genome.mutation_rate)
+    wta_k = int(genome.wta_k)
+    leak = float(genome.leak)
+    input_gain = float(genome.input_gain)
+    threshold_scale = float(genome.threshold_scale)
     if trait_mutation:
         longevity_bonus = max(
             0, min(10, longevity_bonus + int(rng.integers(-1, 2)))
@@ -511,8 +541,35 @@ def _mutate_genome(genome: Genome, rng: np.random.Generator) -> Genome:
             0.5,
             min(3.0, next_mutation_rate * math.exp(rng.normal(0.0, 0.15))),
         )
+    if structural_mutation:
+        wta_k = max(
+            WTA_K_MIN,
+            min(WTA_K_MAX, wta_k + int(rng.integers(-1, 2))),
+        )
+        leak = max(
+            LEAK_MIN,
+            min(LEAK_MAX, leak * math.exp(rng.normal(0.0, 0.03))),
+        )
+        input_gain = max(
+            INPUT_GAIN_MIN,
+            min(
+                INPUT_GAIN_MAX,
+                input_gain * math.exp(rng.normal(0.0, 0.10)),
+            ),
+        )
+        threshold_scale = max(
+            THETA_SCALE_MIN,
+            min(
+                THETA_SCALE_MAX,
+                threshold_scale * math.exp(rng.normal(0.0, 0.08)),
+            ),
+        )
 
-    if not any(rolls) and not readout_mutation:
+    if (
+        not any(rolls)
+        and not readout_mutation
+        and not structural_mutation
+    ):
         return Genome(
             tuple(genome.layer_sizes),
             genome.weights,
@@ -520,6 +577,10 @@ def _mutate_genome(genome: Genome, rng: np.random.Generator) -> Genome:
             fecundity,
             wrong_tolerance,
             next_mutation_rate,
+            wta_k,
+            leak,
+            input_gain,
+            threshold_scale,
         )
 
     layer_sizes = list(genome.layer_sizes)
@@ -557,6 +618,10 @@ def _mutate_genome(genome: Genome, rng: np.random.Generator) -> Genome:
         fecundity,
         wrong_tolerance,
         next_mutation_rate,
+        wta_k,
+        leak,
+        input_gain,
+        threshold_scale,
     )
 
 
@@ -610,6 +675,10 @@ def crossover(
             float((donor.fecundity + other.fecundity) / 2.0),
             float((donor.wrong_tolerance + other.wrong_tolerance) / 2.0),
             float((donor.mutation_rate + other.mutation_rate) / 2.0),
+            int(donor.wta_k),
+            float(donor.leak),
+            float(donor.input_gain),
+            float(donor.threshold_scale),
         ),
         rng,
     )
@@ -621,6 +690,10 @@ def _forward_core_multi(
     sizes: np.ndarray,
     offsets: np.ndarray,
     lengths: np.ndarray,
+    wta_ks: np.ndarray,
+    leaks: np.ndarray,
+    input_gains: np.ndarray,
+    threshold_scales: np.ndarray,
     spike_idx: np.ndarray,
     spike_vals: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -638,6 +711,8 @@ def _forward_core_multi(
 
         mem = np.zeros((MAX_DEPTH, MAX_HIDDEN_SIZE), dtype=np.float32)
         spk = np.zeros((MAX_DEPTH, MAX_HIDDEN_SIZE), dtype=np.float32)
+        theta = THETA_HIDDEN * threshold_scales[i]
+        max_winners = min(int(wta_ks[i]), MAX_HIDDEN_SIZE)
 
         for t in range(n_steps):
             for l in range(depth):
@@ -655,7 +730,11 @@ def _forward_core_multi(
                         if val != 0.0:
                             base = start + idx * n
                             for j in range(n):
-                                mem[l, j] += weights[i, base + j] * val
+                                mem[l, j] += (
+                                    input_gains[i]
+                                    * weights[i, base + j]
+                                    * val
+                                )
                 else:
                     prev_n = sizes[i, l - 1]
                     base = start
@@ -672,13 +751,16 @@ def _forward_core_multi(
                 prev_n = INPUT_SIZE if l == 0 else sizes[i, l - 1]
                 bias_start = start + prev_n * n
                 for j in range(n):
-                    mem[l, j] = LEAK * mem[l, j] + weights[i, bias_start + j]
+                    mem[l, j] = (
+                        leaks[i] * mem[l, j]
+                        + weights[i, bias_start + j]
+                    )
 
-                for _ in range(WTA_K):
+                for _ in range(max_winners):
                     best = -1
                     best_val = -1.0
                     for j in range(n):
-                        if mem[l, j] >= THETA_HIDDEN and mem[l, j] > best_val:
+                        if mem[l, j] >= theta and mem[l, j] > best_val:
                             best = j
                             best_val = mem[l, j]
                     if best >= 0:
@@ -705,12 +787,25 @@ def _forward_core_multi(
 
 def _pack_batch(
     genomes: Sequence[Genome],
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
     n = len(genomes)
     weights = np.zeros((n, MAX_WEIGHTS), dtype=np.float32)
     sizes = np.zeros((n, MAX_DEPTH), dtype=np.int32)
     offsets = np.zeros((n, 5), dtype=np.int32)
     lengths = np.zeros((n, 5), dtype=np.int32)
+    wta_ks = np.zeros(n, dtype=np.int32)
+    leaks = np.zeros(n, dtype=np.float32)
+    input_gains = np.zeros(n, dtype=np.float32)
+    threshold_scales = np.zeros(n, dtype=np.float32)
 
     for i, genome in enumerate(genomes):
         offset = 0
@@ -730,14 +825,36 @@ def _pack_batch(
         weights[i, offset : offset + length] = flat[offset : offset + length]
         offsets[i, 4] = offset
         lengths[i, 4] = length
+        wta_ks[i] = genome.wta_k
+        leaks[i] = genome.leak
+        input_gains[i] = genome.input_gain
+        threshold_scales[i] = genome.threshold_scale
 
-    return weights, sizes, offsets, lengths
+    return (
+        weights,
+        sizes,
+        offsets,
+        lengths,
+        wta_ks,
+        leaks,
+        input_gains,
+        threshold_scales,
+    )
 
 
 def _stack_genome_group(
     genomes: Sequence[Genome],
     layer_sizes: Sequence[int],
-) -> Tuple[List[np.ndarray], List[np.ndarray], np.ndarray, np.ndarray]:
+) -> Tuple[
+    List[np.ndarray],
+    List[np.ndarray],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
     n_pop = len(genomes)
     mats: List[np.ndarray] = []
     biases: List[np.ndarray] = []
@@ -763,24 +880,52 @@ def _stack_genome_group(
     count = prev * 10 + 10
     out_mat = np.empty((n_pop, prev, 10), dtype=np.float32)
     out_bias = np.empty((n_pop, 10), dtype=np.float32)
+    wta_ks = np.empty(n_pop, dtype=np.int32)
+    leaks = np.empty(n_pop, dtype=np.float32)
+    input_gains = np.empty(n_pop, dtype=np.float32)
+    threshold_scales = np.empty(n_pop, dtype=np.float32)
     for i, genome in enumerate(genomes):
         out_mat[i] = genome.weights[offset : offset + prev * 10].reshape(prev, 10)
         out_bias[i] = genome.weights[offset + prev * 10 : offset + count]
-    return mats, biases, out_mat, out_bias
+        wta_ks[i] = genome.wta_k
+        leaks[i] = genome.leak
+        input_gains[i] = genome.input_gain
+        threshold_scales[i] = genome.threshold_scale
+    return (
+        mats,
+        biases,
+        out_mat,
+        out_bias,
+        wta_ks,
+        leaks,
+        input_gains,
+        threshold_scales,
+    )
 
 
-def _vectorized_wta(mem: np.ndarray) -> np.ndarray:
-    fire = mem >= THETA_HIDDEN
+def _vectorized_wta(
+    mem: np.ndarray,
+    wta_ks: np.ndarray,
+    threshold_scales: np.ndarray,
+) -> np.ndarray:
+    thresholds = THETA_HIDDEN * threshold_scales[:, None]
+    fire = mem >= thresholds
     spk = np.zeros_like(mem)
-    k = min(WTA_K, mem.shape[1])
+    k = min(int(wta_ks.max()), mem.shape[1])
     top = np.argpartition(
         np.where(fire, mem, -1e9),
         -k,
         axis=1,
     )[:, -k:]
+    top_vals = np.take_along_axis(mem, top, axis=1)
+    ranks = np.argsort(-top_vals, axis=1)
     flat_rows = np.repeat(np.arange(mem.shape[0]), k)
     flat_cols = top.ravel()
-    active = fire[flat_rows, flat_cols]
+    limits = np.repeat(wta_ks, k)
+    active = (
+        fire[flat_rows, flat_cols]
+        & (ranks.ravel() < limits)
+    )
     selected_rows = flat_rows[active]
     selected_cols = flat_cols[active]
     spk[selected_rows, selected_cols] = 1.0
@@ -793,6 +938,10 @@ def _forward_group_vectorized(
     biases: Sequence[np.ndarray],
     out_mat: np.ndarray,
     out_bias: np.ndarray,
+    wta_ks: np.ndarray,
+    leaks: np.ndarray,
+    input_gains: np.ndarray,
+    threshold_scales: np.ndarray,
     spike_idx: np.ndarray,
     spike_vals: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -810,17 +959,25 @@ def _forward_group_vectorized(
     for t in range(n_steps):
         selected = np.take(mats[0], spike_idx[t], axis=1)
         acc = np.einsum("k,nkj->nj", spike_vals[t], selected)
-        mem[0] = mem[0] * LEAK + acc + biases[0]
-        spk[0] = _vectorized_wta(mem[0])
+        mem[0] = (
+            mem[0] * leaks[:, None]
+            + input_gains[:, None] * acc
+            + biases[0]
+        )
+        spk[0] = _vectorized_wta(mem[0], wta_ks, threshold_scales)
 
         for layer_idx in range(1, depth):
             acc = np.einsum(
                 "np,npj->nj", spk[layer_idx - 1], mats[layer_idx]
             )
             mem[layer_idx] = (
-                mem[layer_idx] * LEAK + acc + biases[layer_idx]
+                mem[layer_idx] * leaks[:, None]
+                + acc
+                + biases[layer_idx]
             )
-            spk[layer_idx] = _vectorized_wta(mem[layer_idx])
+            spk[layer_idx] = _vectorized_wta(
+                mem[layer_idx], wta_ks, threshold_scales
+            )
 
         hidden_counts += spk[-1]
 
@@ -834,9 +991,27 @@ def _forward_numba_batch(
     spike_idx: np.ndarray,
     spike_vals: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    weights, sizes, offsets, lengths = _pack_batch(genomes)
+    (
+        weights,
+        sizes,
+        offsets,
+        lengths,
+        wta_ks,
+        leaks,
+        input_gains,
+        threshold_scales,
+    ) = _pack_batch(genomes)
     logits, hidden_counts = _forward_core_multi(
-        weights, sizes, offsets, lengths, spike_idx, spike_vals
+        weights,
+        sizes,
+        offsets,
+        lengths,
+        wta_ks,
+        leaks,
+        input_gains,
+        threshold_scales,
+        spike_idx,
+        spike_vals,
     )
     return logits, hidden_counts
 
@@ -862,14 +1037,25 @@ def forward(
     for layer_sizes, indices in groups.items():
         selected = [genomes[i] for i in indices]
         if len(selected) >= 8:
-            mats, biases, out_mat, out_bias = _stack_genome_group(
-                selected, layer_sizes
-            )
+            (
+                mats,
+                biases,
+                out_mat,
+                out_bias,
+                wta_ks,
+                leaks,
+                input_gains,
+                threshold_scales,
+            ) = _stack_genome_group(selected, layer_sizes)
             logits, _ = _forward_group_vectorized(
                 mats,
                 biases,
                 out_mat,
                 out_bias,
+                wta_ks,
+                leaks,
+                input_gains,
+                threshold_scales,
                 spike_idx,
                 spike_vals,
             )
@@ -899,14 +1085,25 @@ def extract_hidden_features(
     for layer_sizes, indices in groups.items():
         selected = [genomes[i] for i in indices]
         if len(selected) >= 8:
-            mats, biases, out_mat, out_bias = _stack_genome_group(
-                selected, layer_sizes
-            )
+            (
+                mats,
+                biases,
+                out_mat,
+                out_bias,
+                wta_ks,
+                leaks,
+                input_gains,
+                threshold_scales,
+            ) = _stack_genome_group(selected, layer_sizes)
             _, hidden_rates = _forward_group_vectorized(
                 mats,
                 biases,
                 out_mat,
                 out_bias,
+                wta_ks,
+                leaks,
+                input_gains,
+                threshold_scales,
                 spike_idx,
                 spike_vals,
             )
@@ -1014,6 +1211,10 @@ class Organism:
             "fecundity": self.genome.fecundity,
             "wrong_tolerance": self.genome.wrong_tolerance,
             "mutation_rate": self.genome.mutation_rate,
+            "wta_k": self.genome.wta_k,
+            "leak": self.genome.leak,
+            "input_gain": self.genome.input_gain,
+            "threshold_scale": self.genome.threshold_scale,
             "fitness": self.fitness,
             "digit_accuracies": self.digit_accuracies,
         }
@@ -1091,6 +1292,10 @@ class Ecosystem:
                     genome.fecundity,
                     genome.wrong_tolerance,
                     genome.mutation_rate,
+                    genome.wta_k,
+                    genome.leak,
+                    genome.input_gain,
+                    genome.threshold_scale,
                 ),
                 born_round=self.round,
                 correct=True,
