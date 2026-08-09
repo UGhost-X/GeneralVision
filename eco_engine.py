@@ -12,7 +12,8 @@ import numpy as np
 from dataclasses import dataclass
 
 # ---- 游戏参数（v2 回合制） ----
-T = 120                  # 仿真步数（泊松编码，Task 2/4 v1 已校准）
+T = 40                    # 仿真步数。v2 加速：原 120 时满容量(500)回合 ~4.9s，降为 40 后 ~2.4s（~2×），
+                          # 正确率仍贴随机线、None 率<0.7、12 测试全绿；T 越长单回合越慢（每只 ~0.06ms/步）
 SPIKE_GAIN = 0.6
 LEAK = 0.94
 HIDDEN_SIZE = 100
