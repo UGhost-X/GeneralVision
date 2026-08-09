@@ -27,7 +27,7 @@ CROSS_SIGMA = 0.01       # 有性繁殖高斯扰动 σ
 MUT_RATE = 0.001         # 千分之一大突变
 SURVIVAL_ROUNDS = 20     # 自然寿命上限（回合）
 N_REPRO = 50             # 每对每次繁殖数量 = 存活回合数 × N
-CAPACITY = 500           # 环境承载力（种群上限；全容量回合约 3-4s，网页游戏可玩）
+CAPACITY = 500           # 环境承载力（种群上限；满容量实测均值约 4.5s、峰值约 5.5s）
 DENSITY_FLOOR = 0.05     # 密度地板：承载力处仍有 5% 替代性繁殖，防"满→90%暴毙→回填"锯齿
 INIT_POP = 60            # 初始/全灭重播种群数
 
@@ -172,10 +172,11 @@ class Ecosystem:
         self.total_deaths = 0
         self.stopped = False
         self._img, self._lbl, _, _ = load_mnist()
+        n = min(self.initial_pop, self.capacity)   # 初始种群不得超承载力（滑块互相独立）
         self.pop: list[Genome] = [
-            random_genome(f"eco#{i}", self.rng, gen=0) for i in range(self.initial_pop)
+            random_genome(f"eco#{i}", self.rng, gen=0) for i in range(n)
         ]
-        self.counter = self.initial_pop
+        self.counter = n
 
     def set_config(self, **kw) -> dict:
         """更新可调参数（前端调用）。合法值直接写入；非法忽略。"""
@@ -253,10 +254,11 @@ class Ecosystem:
 
         # ---- 全灭重播 ----
         if not self.pop:
+            n = min(self.initial_pop, self.capacity)   # 重播种群数同样受承载力封顶
             self.pop = [random_genome(f"eco#{self.counter + i}", self.rng, gen=self.round)
-                        for i in range(self.initial_pop)]
-            self.counter += self.initial_pop
-            events.append({"type": "reseed", "count": self.initial_pop})
+                        for i in range(n)]
+            self.counter += n
+            events.append({"type": "reseed", "count": n})
 
         # ---- 停止条件：累计自然死亡 / 累计总死亡 ≥ 95% ----
         natural_rate = (self.natural_deaths / self.total_deaths) if self.total_deaths > 0 else 0.0

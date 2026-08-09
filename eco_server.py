@@ -82,7 +82,10 @@ class EcoHandler(BaseHTTPRequestHandler):
                 self._json({"error": f"digit {digit} 超出 0-9 范围"}, 400); return
             with self.lock:
                 st = self.engine.get_state()
-                name = body.get("name") or st["stats"]["best_name"]
+                name = body.get("name") or (st["population"][0]["name"] if st["population"] else None)
+                if name is None:
+                    self._json({"error": "no organism"}, 404)
+                    return
                 try:
                     self._json(self.engine.manual_feed(name, digit))
                 except StopIteration:

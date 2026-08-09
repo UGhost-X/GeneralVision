@@ -116,6 +116,14 @@ def test_round_never_exceeds_capacity():
     assert e.total_deaths > 0, "应有死亡记录"
     assert len(e.pop) >= 1, "不应灭绝到 0（全灭重播应恢复）"
 
+def test_reseed_respects_capacity():
+    """极端合法配置下，全灭重播种群数不得超承载力。"""
+    e = eco.Ecosystem(seed=3)
+    e.set_config(capacity=100, initial_pop=1000)   # 两者都是合法滑块值
+    e.pop = []                                     # 强制触发全灭重播
+    events, stats = e.step_round()
+    assert len(e.pop) <= e.capacity, f"重播 {len(e.pop)} > 承载力 {e.capacity}"
+
 def test_weighted_crossover():
     """存活加权交叉：weight_a 越大，后代越接近 a。"""
     rng = np.random.default_rng(7)

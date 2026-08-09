@@ -1,7 +1,6 @@
 # _eco_smoke.py
 """回合制引擎冒烟：跑 30 回合，记录每回合种群/正确率/自然死亡率/耗时与诚实基线。"""
 import time
-import numpy as np
 import eco_engine as eco
 
 def main():

@@ -108,7 +108,7 @@ const esc = s => String(s).replace(/[&<>"']/g,
 
 const state = { round:0, pop:new Map(), config:null, stats:null, auto:true,
                 speed:5000, foodLabel:null, naturalSeries:[], correctSeries:[],
-                popSeries:[], stepping:false, selected:null, animating:false,
+                popSeries:[], stepping:false, selected:null,
                 reseeded:false };
 let dishLayout = null, dishNames = [];   // 最近一次 drawDish 的网格布局与顺序，供点击命中
 
@@ -301,7 +301,6 @@ async function stepRound(){
 }
 
 async function replayEvents(events, stats){
-  state.animating = true;
   const dur = Math.max(800, state.speed);         // 动画时长下限=投喂速度（1-10s）
   let food = null, rEnd = null, reseed = null;
   const orgRound = [], deaths = [], births = [];
@@ -392,7 +391,6 @@ async function replayEvents(events, stats){
     $("#playBtn").textContent = "▶ 手动";
   }
   updateFeedTarget();
-  state.animating = false;
 }
 
 // ---------- 个体解剖 ----------
