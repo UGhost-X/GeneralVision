@@ -36,27 +36,46 @@ CAPACITY = 500           # 环境承载力（种群上限；满容量实测均�
 DENSITY_FLOOR = 0.05     # 密度地板：承载力处仍有 5% 替代性繁殖，防"满→90%暴毙→回填"锯齿
 INIT_POP = 60            # 初始/全灭重播种群数
 
+# ---- 多层架构边界（v3 结构突变） ----
+MIN_LAYERS = 1           # 最小隐藏层数
+MAX_LAYERS = 4           # 最大隐藏层数（保回合耗时）
+MIN_NEURONS = 20         # 每层最小神经元数
+MAX_NEURONS = 200        # 每层最大神经元数
+MAX_HIDDEN = 400         # 全部隐藏神经元硬上限（保 forward 耗时）
+NORM_ACTIVE_EPS = 1.0    # 列 L2 范数 ≥1.0 才归一化；以下视为静默（保持近零不放电）
+
 
 @dataclass
 class Genome:
-    """一个生物体：架构固定（784→100→10），权重即基因。"""
+    """一个生物体：变深度架构（1-4 隐藏层，初始单层），权重即基因。"""
     name: str
-    hidden: np.ndarray            # (784, 100) 输入→隐藏
-    readout: np.ndarray           # (100, 10)  隐藏→产出
+    layers: list[np.ndarray]   # 隐藏层权重 [(784,n1),(n1,n2),…]，每层 (n_in,n_out)
+    readout: np.ndarray        # (n_k, 10)  末隐藏层→产出
     born_gen: int = 0
     age: int = 0
     parents: tuple | None = None
 
+    def arch(self) -> list[int]:
+        """各隐藏层神经元数（架构指纹，前端解剖用）。"""
+        return [int(W.shape[1]) for W in self.layers]
+
 
 @numba.njit(cache=True)
 def _normalize_cols(W: np.ndarray, norm: float) -> np.ndarray:
-    """每列归一化到指定 L2 范数（保证随机权重动力学不爆/不哑）。numba JIT 版。"""
+    """每列归一化到指定 L2 范数；列范数 < NORM_ACTIVE_EPS 的静默列跳过（保持近零）。
+
+    静默列（结构突变新生的近零权重）不归一化 → 不放大 → 不放电，行为保持；
+    活跃列归一化保证动力学不爆/不哑。
+    """
     out = W.copy()
     nrow, ncol = out.shape
+    eps2 = NORM_ACTIVE_EPS * NORM_ACTIVE_EPS
     for j in range(ncol):
         s = 0.0
         for i in range(nrow):
             s += out[i, j] * out[i, j]
+        if s < eps2:
+            continue
         inv = norm / (np.sqrt(s) + 1e-8)
         for i in range(nrow):
             out[i, j] *= inv
@@ -69,9 +88,10 @@ def _random_weights(n_in: int, n_out: int, norm: float, rng: np.random.Generator
 
 
 def random_genome(name: str, rng: np.random.Generator, gen: int = 0) -> Genome:
+    """初始/全灭重播个体：单层 784→100→10（多层只由结构突变产生）。"""
     return Genome(
         name=name,
-        hidden=_random_weights(784, HIDDEN_SIZE, W_NORM_HIDDEN, rng),
+        layers=[_random_weights(784, HIDDEN_SIZE, W_NORM_HIDDEN, rng)],
         readout=_random_weights(HIDDEN_SIZE, READOUT_SIZE, W_NORM_READOUT, rng),
         born_gen=gen,
     )
@@ -79,19 +99,25 @@ def random_genome(name: str, rng: np.random.Generator, gen: int = 0) -> Genome:
 
 def crossover(a: Genome, b: Genome, rng: np.random.Generator,
               weight_a: float = 1.0, weight_b: float = 1.0) -> Genome:
-    """有性繁殖：逐权重以 pa 取 a（存活时长加权）+ 均匀小扰动 + 千分之一大突变。
+    """有性繁殖：逐层逐权重以 pa 取 a（存活时长加权）+ 均匀小扰动 + 千分之一大突变。
 
     默认 weight_a=weight_b → 50/50；weight_a 越大后代越偏 a（活越久的个体基因占比越大）。
-    扰动用均匀分布（rng.uniform(-σ,σ)）代替高斯：同为"小扰动"，但均匀生成比正态快 ~4×，
-    是 4500 只/回合级繁殖的主要提速点（2026-08-09 v2 性能优化）。
+    扰动用均匀分布（rng.uniform(-σ,σ)）：同为"小扰动"，比正态快 ~4×。
+    当前版本：双亲同构时逐层混合；形状不兼容的层取 a 的原层（架构继承完整逻辑见结构突变层）。
     """
     wsum = weight_a + weight_b
     pa = weight_a / wsum if wsum > 0 else 0.5
-    hidden = np.where(rng.random(a.hidden.shape) < pa, a.hidden, b.hidden)
-    hidden += rng.uniform(-CROSS_SIGMA, CROSS_SIGMA, hidden.shape)
-    mh = rng.random(hidden.shape) < MUT_RATE
-    hidden[mh] = rng.uniform(-W_INIT_RANGE, W_INIT_RANGE, int(mh.sum()))
-    hidden = _normalize_cols(hidden, W_NORM_HIDDEN)
+    layers = []
+    for i, Wa in enumerate(a.layers):
+        Wb = b.layers[i] if i < len(b.layers) else None
+        if Wb is not None and Wa.shape == Wb.shape:
+            Wc = np.where(rng.random(Wa.shape) < pa, Wa, Wb)
+            Wc += rng.uniform(-CROSS_SIGMA, CROSS_SIGMA, Wc.shape)
+            m = rng.random(Wc.shape) < MUT_RATE
+            Wc[m] = rng.uniform(-W_INIT_RANGE, W_INIT_RANGE, int(m.sum()))
+            layers.append(_normalize_cols(Wc, W_NORM_HIDDEN))
+        else:
+            layers.append(Wa.copy())          # 形状不兼容 → 取 a 原层
 
     readout = np.where(rng.random(a.readout.shape) < pa, a.readout, b.readout)
     readout += rng.uniform(-CROSS_SIGMA, CROSS_SIGMA, readout.shape)
@@ -99,7 +125,7 @@ def crossover(a: Genome, b: Genome, rng: np.random.Generator,
     readout[mr] = rng.uniform(-W_INIT_RANGE, W_INIT_RANGE, int(mr.sum()))
     readout = _normalize_cols(readout, W_NORM_READOUT)
 
-    return Genome(name="child", hidden=hidden, readout=readout,
+    return Genome(name="child", layers=layers, readout=readout,
                   parents=(a.name, b.name))
 
 
@@ -148,58 +174,76 @@ def death_cause(g: Genome, correct: bool, survival_rounds: int) -> str | None:
     return None
 
 
-@numba.njit(cache=True, inline="always")
-def _forward_core(S: np.ndarray, Wh: np.ndarray, Wr: np.ndarray,
-                  leak: float, theta_h: float, theta_r: float,
-                  ref_period: int, n_t: int
-                  ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """numba JIT 版 LIF 前向核心：逐 b 逐 t 放电。
+@numba.njit(cache=True)
+def _forward_core_multi(S: np.ndarray, layers: numba.typed.List, Wr: np.ndarray,
+                        max_n: int, leak: float, theta_h: float, theta_r: float,
+                        ref_period: int, n_t: int
+                        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """numba JIT 版多层 LIF 前向核心：逐 b 逐 t 逐层放电。
 
-    S:(B,784,T) float32 泊松脉冲；Wh:(784,n_h) float64；Wr:(n_h,n_r) float64。
-    镜像 numpy forward 语义：累积→不应期清零→漏电→WTA(首个最大者)→发放→不应期递减；
-    产出层随隐藏层发放同步积分+WTA。返回 (produced[B] int64, hc(B,n_h) int64, rc(B,n_r) int64)。
+    S:(B,784,T) float32 泊松脉冲；layers: 变长 typed.List[(n_in,n_out) float64]；
+    Wr:(n_k,10) float64；max_n = max(layers[l].shape[1]) 供缓冲区分配。
+    每层：稀疏累加 → 不应期清零 → 漏电 → WTA(首个最大者) → 发放 → 不应期递减；
+    层 l 的 one-hot 作为层 l+1 输入；末层 one-hot 进产出层（同 θ_r）。
+    返回 (produced[B] int64, cnt(K,B,max_n) int64, rc(B,10) int64)。
     """
     B = S.shape[0]
-    n_in = S.shape[1]
-    n_h = Wh.shape[1]
+    K = len(layers)
+    n_in0 = S.shape[1]
     n_r = Wr.shape[1]
-    Vh = np.zeros((B, n_h), dtype=np.float32)
-    refh = np.zeros((B, n_h), dtype=np.int32)
+    V = np.zeros((K, B, max_n), dtype=np.float32)
+    ref = np.zeros((K, B, max_n), dtype=np.int32)
+    cnt = np.zeros((K, B, max_n), dtype=np.int64)
     Vr = np.zeros((B, n_r), dtype=np.float32)
     refr = np.zeros((B, n_r), dtype=np.int32)
-    hc = np.zeros((B, n_h), dtype=np.int64)
     rc = np.zeros((B, n_r), dtype=np.int64)
+    prev = np.zeros((B, max_n), dtype=np.float32)   # 上一层 one-hot 缓冲
     for t in range(n_t):
+        for l in range(K):
+            W = layers[l]
+            n_out = W.shape[1]
+            for b in range(B):
+                row = np.zeros(n_out, dtype=np.float64)
+                if l == 0:
+                    for i in range(n_in0):
+                        if S[b, i, t] > 0.0:
+                            for j in range(n_out):
+                                row[j] += W[i, j]
+                else:
+                    for i in range(W.shape[0]):      # 本层输入维 = 上一层 n_out
+                        if prev[b, i] > 0.0:
+                            for j in range(n_out):
+                                row[j] += W[i, j]
+                for j in range(n_out):
+                    V[l, b, j] += row[j]
+                    if ref[l, b, j] > 0:
+                        V[l, b, j] = 0.0
+                    V[l, b, j] *= leak
+                best = -1
+                best_v = -1.0e30
+                for j in range(n_out):
+                    if ref[l, b, j] <= 0 and V[l, b, j] >= theta_h and V[l, b, j] > best_v:
+                        best_v = V[l, b, j]
+                        best = j
+                for j in range(max_n):
+                    prev[b, j] = 0.0
+                if best >= 0:
+                    for j in range(n_out):
+                        V[l, b, j] = 0.0
+                        if ref[l, b, j] <= 0:
+                            ref[l, b, j] = 1
+                    ref[l, b, best] = ref_period
+                    cnt[l, b, best] += 1
+                    prev[b, best] = 1.0
+                for j in range(n_out):
+                    if ref[l, b, j] > 0:
+                        ref[l, b, j] -= 1
+        # 产出层：末层 one-hot（prev）→ 积分 + WTA
         for b in range(B):
-            # 隐藏层：稀疏点积先累进 float64 行（与 numpy 完整 float64 点积一致），再一次性加进 float32 Vh
-            row = np.zeros(n_h, dtype=np.float64)
-            for i in range(n_in):
-                if S[b, i, t] > 0.0:
-                    for j in range(n_h):
-                        row[j] += Wh[i, j]
-            for j in range(n_h):
-                Vh[b, j] += row[j]
-            for j in range(n_h):
-                if refh[b, j] > 0:
-                    Vh[b, j] = 0.0
-                Vh[b, j] *= leak
-            best = -1
-            best_v = -1.0e30
-            for j in range(n_h):
-                if refh[b, j] <= 0 and Vh[b, j] >= theta_h and Vh[b, j] > best_v:
-                    best_v = Vh[b, j]
-                    best = j
-            if best >= 0:
-                for j in range(n_h):
-                    Vh[b, j] = 0.0
-                    if refh[b, j] <= 0:
-                        refh[b, j] = 1
-                refh[b, best] = ref_period
-                hc[b, best] += 1
-                # 产出层：仅当隐藏发放时累加 Wr[best, :]（hspk=onehot(best) @ Wr）
-                for k in range(n_r):
-                    Vr[b, k] += Wr[best, k]
-            # 产出层：每步都对所有行漏电 + 不应期清零 + WTA（与 numpy 一致，不依赖隐藏层是否发放）
+            for k in range(n_r):
+                for i in range(Wr.shape[0]):          # 末层输出维 = readout 行数
+                    if prev[b, i] > 0.0:
+                        Vr[b, k] += Wr[i, k]
             for k in range(n_r):
                 if refr[b, k] > 0:
                     Vr[b, k] = 0.0
@@ -217,10 +261,6 @@ def _forward_core(S: np.ndarray, Wh: np.ndarray, Wr: np.ndarray,
                         refr[b, k] = 1
                 refr[b, best_r] = ref_period
                 rc[b, best_r] += 1
-            # 不应期递减（每步对每行执行）
-            for j in range(n_h):
-                if refh[b, j] > 0:
-                    refh[b, j] -= 1
             for k in range(n_r):
                 if refr[b, k] > 0:
                     refr[b, k] -= 1
@@ -235,32 +275,33 @@ def _forward_core(S: np.ndarray, Wh: np.ndarray, Wr: np.ndarray,
                 bestc = rc[b, k]
                 bestp = k
         produced[b] = bestp if total > 0 else -1
-    return produced, hc, rc
+    return produced, cnt, rc
 
 
 def forward(genome: Genome, pixels: np.ndarray, rng: np.random.Generator
-            ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """pixels: (B,784) ∈[0,1]。返回 (produced, hidden_counts, readout_counts)。
+            ) -> tuple[np.ndarray, list[np.ndarray], np.ndarray]:
+    """pixels: (B,784) ∈[0,1]。返回 (produced, layer_counts, readout_counts)。
 
-    泊松编码（numpy 生成脉冲）→ numba JIT 核心（隐藏层 LIF+WTA 无学习 → 产出层 LIF）。
+    泊松编码（numpy 生成脉冲）→ numba JIT 多层核心（逐层 LIF+WTA 无学习 → 产出层 LIF）。
     produced = 产出层累计发放最多的数字；-1 表示整场未发放。
     """
     B = pixels.shape[0]
     S = (rng.random((B, 784, T), dtype=np.float32) < (pixels[:, :, None] * SPIKE_GAIN)).astype(np.float32)
-    produced, hc, rc = _forward_core(S, genome.hidden, genome.readout,
-                                     LEAK, THETA_HIDDEN, THETA_READOUT, REF_PERIOD, T)
-    return produced, hc, rc
+    return forward_from_S(genome, S)
 
 
 def forward_from_S(genome: Genome, S: np.ndarray
-                   ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                   ) -> tuple[np.ndarray, list[np.ndarray], np.ndarray]:
     """复用已生成的泊松脉冲 S 做前向（回合内所有个体共享同一 S，省去逐只生成脉冲）。
 
-    与 forward 等价，只是脉冲由调用方一次生成。S:(1,784,T) float32。
+    与 forward 等价，只是脉冲由调用方一次生成。S:(B,784,T) float32。
     """
-    produced, hc, rc = _forward_core(S, genome.hidden, genome.readout,
-                                     LEAK, THETA_HIDDEN, THETA_READOUT, REF_PERIOD, T)
-    return produced, hc, rc
+    layers = numba.typed.List(genome.layers)
+    max_n = max(W.shape[1] for W in genome.layers)
+    produced, cnt, rc = _forward_core_multi(S, layers, genome.readout, max_n,
+                                            LEAK, THETA_HIDDEN, THETA_READOUT, REF_PERIOD, T)
+    layer_counts = [cnt[l][:, :genome.layers[l].shape[1]] for l in range(len(genome.layers))]
+    return produced, layer_counts, rc
 
 
 # ---- 生态主循环（v2 回合制）----
@@ -335,23 +376,33 @@ class Ecosystem:
         food_pix = self._img[food_idx][None]
         S = (np.random.default_rng(self.round * 1_000_003).random((1, 784, T), dtype=np.float32)
              < (food_pix[:, :, None] * SPIKE_GAIN)).astype(np.float32)
+        accs: dict[str, float] = {}
         for i, g in enumerate(self.pop):
             produced, _hc, rc = forward_from_S(g, S)
             produced = int(produced[0])
             correct = (produced == food_lbl)
-            cause = death_cause(g, correct, self.survival_rounds)
+            g.age += 1
             events.append({"type": "org_round", "name": g.name, "produced": produced,
                            "correct": bool(correct), "age": g.age,
                            "readout_profile": rc.mean(axis=0).round(2).tolist()})
             avg_correct += float(correct)
-            if cause is not None:
-                self.total_deaths += 1
-                if cause == "natural":
-                    self.natural_deaths += 1
-                events.append({"type": "death", "name": g.name, "cause": cause})
-            else:
-                survivors.append(g)
+            accs[g.name] = 1.0 if correct else 0.0
         avg_correct /= max(1, len(self.pop))
+
+        # ---- 淘汰规则（v3）：按正确率排淘汰最差 30%（非自然，不计停止指标）+ 顶部 70% 中 age>存活回合数自然死亡 ----
+        order = sorted(self.pop, key=lambda g: -accs[g.name])
+        n_keep = max(1, round(len(order) * 0.70))                 # 存活顶部 70%
+        bottom_ids = {id(g) for g in order[n_keep:]}              # 最差 30% 非自然死亡
+        aged_ids = {id(g) for g in order[:n_keep] if g.age > self.survival_rounds}  # 顶部高龄自然死亡
+        survivors = [g for g in self.pop if id(g) not in bottom_ids and id(g) not in aged_ids]
+        for g in self.pop:
+            if id(g) in bottom_ids:
+                self.total_deaths += 1
+                events.append({"type": "death", "name": g.name, "cause": "unnatural"})
+            elif id(g) in aged_ids:
+                self.natural_deaths += 1
+                self.total_deaths += 1
+                events.append({"type": "death", "name": g.name, "cause": "natural"})
 
         # ---- 存活奖励 alpha：存活率 = 本回合存活者 / 回合开始种群 ----
         start_pop = len(self.pop)
@@ -359,13 +410,15 @@ class Ecosystem:
         self.last_survival_rate = (len(survivors) / start_pop) if start_pop > 0 else 0.0
         self.last_alpha = alpha
 
-        # ---- 选型交配繁殖（年龄相似度加权配对 + 存活时长加权交叉 + 密度依赖 + 承载力） ----
+        # ---- 选型交配繁殖（随机两两 + 存活加权交叉 + 密度）----
         pairs = assortative_pairs(survivors, self.assort_strength, self.rng)
         births: list[Genome] = []
         if pairs:
             density = max(DENSITY_FLOOR, 1.0 - start_pop / self.capacity)
             brood = int(round(self.survival_rounds * self.n_repro * alpha * density))
-            room = max(0, self.capacity - len(survivors))
+            # v3 选项 2：不强制回填到满容量——只生到能覆盖本回合死亡的量（种群保持当前规模），
+            # 不再 min(承载力-存活者) 让种群一回合跳到承载力（那是 5000 大种群回合变慢的根源）。
+            room = max(0, start_pop - len(survivors))
             target = min(room, len(pairs) * brood)
             for k in range(target):
                 a, b = pairs[k % len(pairs)]
@@ -426,10 +479,10 @@ class Ecosystem:
         g = next(x for x in self.pop if x.name == name)
         cand = np.nonzero(self._lbl == digit)[0]
         idx = int(self.rng.choice(cand))
-        produced, hc, rc = forward(g, self._img[idx][None],
-                                   np.random.default_rng(int(self.rng.integers(0, 2**31))))
+        produced, layer_counts, rc = forward(g, self._img[idx][None],
+                                             np.random.default_rng(int(self.rng.integers(0, 2**31))))
         return {"food_pixels": self._img[idx].tolist(), "label": digit,
                 "produced": int(produced[0]),
                 "correct": bool(produced[0] == digit),
-                "hidden_counts": hc[0].tolist(),
+                "layer_counts": [c[0].tolist() for c in layer_counts],
                 "readout_counts": rc[0].tolist()}

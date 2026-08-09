@@ -8,17 +8,17 @@ def test_crossover_mixes_both_parents():
     a = eco.random_genome("a", rng)
     b = eco.random_genome("b", rng)
     child = eco.crossover(a, b, rng)
-    assert child.hidden.shape == (784, 100), child.hidden.shape
+    assert child.layers[0].shape == (784, 100), child.layers[0].shape
     assert child.readout.shape == (100, 10), child.readout.shape
     # 逐权重取父/母：每个权重应"更接近"其中一方（噪声 σ=0.01 远小于双亲差距）
-    for Wc, Wa, Wb in [(child.hidden, a.hidden, b.hidden),
+    for Wc, Wa, Wb in [(child.layers[0], a.layers[0], b.layers[0]),
                        (child.readout, a.readout, b.readout)]:
         closer_a = (np.abs(Wc - Wa) < np.abs(Wc - Wb)).mean()
         assert 0.35 < closer_a < 0.65, f"closer_a={closer_a}"
 
 def test_columns_normalized():
     g = eco.random_genome("n", np.random.default_rng(0))
-    norms = np.linalg.norm(g.hidden, axis=0)
+    norms = np.linalg.norm(g.layers[0], axis=0)
     assert np.allclose(norms, eco.W_NORM_HIDDEN, atol=1e-4), norms[:5]
     rnorms = np.linalg.norm(g.readout, axis=0)
     assert np.allclose(rnorms, eco.W_NORM_READOUT, atol=1e-4), rnorms[:5]
@@ -28,8 +28,8 @@ def test_mutation_is_rare():
     a = eco.random_genome("a", rng)
     b = eco.random_genome("b", rng)
     child = eco.crossover(a, b, rng)
-    d_a = np.abs(child.hidden - a.hidden)
-    d_b = np.abs(child.hidden - b.hidden)
+    d_a = np.abs(child.layers[0] - a.layers[0])
+    d_b = np.abs(child.layers[0] - b.layers[0])
     from_a = (d_a < d_b).mean()                 # 一半来自 a，一半来自 b
     both_far = ((d_a > 0.3) & (d_b > 0.3)).mean()  # 大突变应极罕见
     assert 0.35 < from_a < 0.65, from_a
@@ -38,22 +38,25 @@ def test_mutation_is_rare():
 def test_genome_serialize():
     import json
     g = eco.random_genome("s", np.random.default_rng(3))
-    d = {"name": g.name, "hidden": g.hidden.tolist(), "readout": g.readout.tolist(),
+    d = {"name": g.name, "layers": [W.tolist() for W in g.layers],
+         "readout": g.readout.tolist(),
          "born_gen": g.born_gen, "age": g.age}
     s = json.dumps(d)
     d2 = json.loads(s)
     assert d2["name"] == g.name
     assert d2["born_gen"] == g.born_gen and d2["age"] == g.age
-    assert np.array_equal(np.array(d2["hidden"], g.hidden.dtype), g.hidden), "hidden 数组应往返一致"
+    assert len(d2["layers"]) == len(g.layers)
+    for W2, W in zip(d2["layers"], g.layers):
+        assert np.array_equal(np.array(W2, g.layers[0].dtype), W), "layer 数组应往返一致"
     assert np.array_equal(np.array(d2["readout"], g.readout.dtype), g.readout), "readout 数组应往返一致"
 
 def test_forward_shapes_and_deterministic():
     rng = np.random.default_rng(5)
     g = eco.random_genome("f", rng)
     pix = np.zeros((3, 784), np.float32); pix[0, 200:250] = 1.0
-    produced, hc, rc = eco.forward(g, pix, np.random.default_rng(5))
-    assert produced.shape == (3,) and hc.shape == (3, 100) and rc.shape == (3, 10)
-    assert produced.dtype == np.int64 and hc.dtype == np.int64
+    produced, lc, rc = eco.forward(g, pix, np.random.default_rng(5))
+    assert produced.shape == (3,) and len(lc) == 1 and lc[0].shape == (3, 100) and rc.shape == (3, 10)
+    assert produced.dtype == np.int64 and lc[0].dtype == np.int64
     produced2, _, _ = eco.forward(g, pix, np.random.default_rng(5))
     assert np.array_equal(produced, produced2), "同 seed 应可复现"
 
@@ -64,8 +67,8 @@ def test_forward_firing_sane():
     rng = np.random.default_rng(1)
     g = eco.random_genome("f2", rng)
     idx = rng.integers(0, len(ti), 40)
-    produced, hc, rc = eco.forward(g, ti[idx], np.random.default_rng(2))
-    assert hc.sum() > 0, "隐藏层整场无发放——动力学哑了"
+    produced, lc, rc = eco.forward(g, ti[idx], np.random.default_rng(2))
+    assert sum(int(c.sum()) for c in lc) > 0, "隐藏层整场无发放——动力学哑了"
     none_frac = float((produced == -1).mean())
     assert none_frac < 0.7, f"产出层未发放比例过高 {none_frac:.2f}"
     real = produced[produced != -1]
@@ -97,6 +100,7 @@ def test_round_loop_invariants():
     r = eco_.manual_feed(g0.name, 3)
     assert r["label"] == 3 and r["produced"] in list(range(-1, 10))
     assert len(r["food_pixels"]) == 784 and len(r["readout_counts"]) == 10
+    assert len(r["layer_counts"]) == 1 and len(r["layer_counts"][0]) == eco.HIDDEN_SIZE
     # 可复现
     def _run2(seed):
         e = eco.Ecosystem(seed=seed)
@@ -130,10 +134,10 @@ def test_weighted_crossover():
     a = eco.random_genome("a", rng)
     b = eco.random_genome("b", rng)
     child_50 = eco.crossover(a, b, np.random.default_rng(8), weight_a=1, weight_b=1)
-    close50 = (np.abs(child_50.hidden - a.hidden) < np.abs(child_50.hidden - b.hidden)).mean()
+    close50 = (np.abs(child_50.layers[0] - a.layers[0]) < np.abs(child_50.layers[0] - b.layers[0])).mean()
     assert 0.35 < close50 < 0.65, close50
     child_90 = eco.crossover(a, b, np.random.default_rng(8), weight_a=9, weight_b=1)
-    close90 = (np.abs(child_90.hidden - a.hidden) < np.abs(child_90.hidden - b.hidden)).mean()
+    close90 = (np.abs(child_90.layers[0] - a.layers[0]) < np.abs(child_90.layers[0] - b.layers[0])).mean()
     assert close90 > 0.75, f"weight_a=9 应显著偏向 a: {close90}"
 
 def test_death_cause():
@@ -245,34 +249,48 @@ def test_config_assort_strength():
     assert abs(e.assort_strength - 0.8) < 1e-9
 
 
-def _forward_numpy_reference(genome, pixels, rng):
-    """纯 numpy 参考实现（对照 numba JIT 核心，验证语义一致；仅测试用）。"""
+def _forward_numpy_reference_multi(genome, pixels, rng):
+    """纯 numpy 多层参考实现（对照 numba _forward_core_multi，验证语义一致；仅测试用）。
+
+    语义镜像：累积→不应期清零→漏电→WTA(首个最大者)→发放→不应期递减；逐层 one-hot 前馈。
+    """
     B = pixels.shape[0]; T = eco.T
     S = (rng.random((B, 784, T), dtype=np.float32) < (pixels[:, :, None] * eco.SPIKE_GAIN)).astype(np.float32)
-    Vh = np.zeros((B, eco.HIDDEN_SIZE), np.float32)
-    refh = np.zeros((B, eco.HIDDEN_SIZE), np.int32)
+    K = len(genome.layers)
+    max_n = max(W.shape[1] for W in genome.layers)
+    V = np.zeros((K, B, max_n), np.float32)
+    ref = np.zeros((K, B, max_n), np.int32)
+    cnt = np.zeros((K, B, max_n), np.int64)
     Vr = np.zeros((B, eco.READOUT_SIZE), np.float32)
     refr = np.zeros((B, eco.READOUT_SIZE), np.int32)
-    hc = np.zeros((B, eco.HIDDEN_SIZE), np.int64)
     rc = np.zeros((B, eco.READOUT_SIZE), np.int64)
-    Wh, Wr = genome.hidden, genome.readout
+    prev = np.zeros((B, max_n), np.float32)
     for t in range(T):
-        Vh += S[:, :, t] @ Wh
-        Vh[refh > 0] = 0.0
-        Vh *= eco.LEAK
-        elig = (refh <= 0) & (Vh >= eco.THETA_HIDDEN)
-        fire_rows = np.nonzero(elig.any(axis=1))[0]
-        hspk = np.zeros((B, eco.HIDDEN_SIZE), np.float32)
-        if fire_rows.size:
-            win = np.where(elig, Vh, -np.inf).argmax(axis=1)[fire_rows]
-            Vh[fire_rows] = 0.0
-            was_idle = refh[fire_rows] <= 0
-            refh[fire_rows] = np.where(was_idle, 1, refh[fire_rows])
-            refh[fire_rows, win] = eco.REF_PERIOD
-            hspk[fire_rows, win] = 1.0
-            hc[fire_rows, win] += 1
-        refh = np.maximum(refh - 1, 0)
-        Vr += hspk @ Wr
+        for l in range(K):
+            W = genome.layers[l]; n_in = W.shape[0]; n_out = W.shape[1]
+            inp = S[:, :, t] if l == 0 else prev[:, :n_in]
+            Vl = V[l][:, :n_out]
+            refl = ref[l][:, :n_out]
+            cntl = cnt[l][:, :n_out]
+            Vl += inp @ W
+            Vl[refl > 0] = 0.0
+            Vl *= eco.LEAK
+            elig = (refl <= 0) & (Vl >= eco.THETA_HIDDEN)
+            fire_rows = np.nonzero(elig.any(axis=1))[0]
+            out = np.zeros((B, n_out), np.float32)
+            if fire_rows.size:
+                win = np.where(elig, Vl, -np.inf).argmax(axis=1)[fire_rows]
+                Vl[fire_rows] = 0.0
+                was_idle = refl[fire_rows] <= 0
+                refl[fire_rows] = np.where(was_idle, 1, refl[fire_rows])
+                refl[fire_rows, win] = eco.REF_PERIOD
+                out[fire_rows, win] = 1.0
+                cntl[fire_rows, win] += 1
+            ref[l][:, :n_out] = np.maximum(refl - 1, 0)
+            prev[:, :n_out] = out
+        # 产出层：末层 one-hot @ readout
+        n_k = genome.readout.shape[0]
+        Vr += prev[:, :n_k] @ genome.readout
         Vr[refr > 0] = 0.0
         Vr *= eco.LEAK
         eligr = (refr <= 0) & (Vr >= eco.THETA_READOUT)
@@ -286,14 +304,15 @@ def _forward_numpy_reference(genome, pixels, rng):
             rc[fire_r, winr] += 1
         refr = np.maximum(refr - 1, 0)
     produced = np.where(rc.sum(axis=1) > 0, rc.argmax(axis=1), -1)
-    return produced, hc, rc
+    layer_counts = [cnt[l][:, :genome.layers[l].shape[1]] for l in range(K)]
+    return produced, layer_counts, rc
 
 
 def test_numba_matches_reference():
-    """numba forward 与纯 numpy 参考在相同泊松脉冲上应给出几乎一致的 produced。
+    """numba 多层 forward 与纯 numpy 参考在相同泊松脉冲上应给出几乎一致的 produced。
 
     用同一 rng seed 两次调用保证 S 相同；浮点累加顺序不同允许个别近平局样本翻转，
-    但整体一致性须 ≥0.9（抓语义级 bug）。
+    但整体一致性须 ≥0.9（抓语义级 bug）。单层基线。
     """
     from data_loading import load_mnist
     ti, tl, _, _ = load_mnist()
@@ -301,13 +320,34 @@ def test_numba_matches_reference():
     g = eco.random_genome("f2", rng)
     idx = rng.integers(0, len(ti), 60)
     pix = ti[idx]
-    p_num, hc_num, rc_num = eco.forward(g, pix, np.random.default_rng(2))
-    p_ref, hc_ref, rc_ref = _forward_numpy_reference(g, pix, np.random.default_rng(2))
+    p_num, lc_num, rc_num = eco.forward(g, pix, np.random.default_rng(2))
+    p_ref, lc_ref, rc_ref = _forward_numpy_reference_multi(g, pix, np.random.default_rng(2))
     agree = float((p_num == p_ref).mean())
     assert agree >= 0.9, f"numba 与 numpy produced 一致性仅 {agree:.2f}（语义疑似偏离）"
-    # 发放计数也应一致（hidden/readout 总发放数相同）
-    assert int(hc_num.sum()) == int(hc_ref.sum()), "隐藏层总发放数不一致"
+    # 每层发放计数也应一致
+    for a, b in zip(lc_num, lc_ref):
+        assert int(a.sum()) == int(b.sum()), "隐藏层总发放数不一致"
     assert int(rc_num.sum()) == int(rc_ref.sum()), "产出层总发放数不一致"
+
+
+def test_multilayer_forward_matches_reference():
+    """2/3 层个体：numba _forward_core_multi 与纯 numpy 参考在相同 S 上 produced/发放数一致。"""
+    from data_loading import load_mnist
+    ti, tl, _, _ = load_mnist()
+    rng = np.random.default_rng(3)
+    idx = rng.integers(0, len(ti), 40)
+    pix = ti[idx]
+    for arch in ([100], [80, 50], [60, 40, 30]):
+        g = eco.Genome(name="m", layers=[
+            eco._random_weights(784 if i == 0 else arch[i - 1], n, eco.W_NORM_HIDDEN, rng)
+            for i, n in enumerate(arch)],
+            readout=eco._random_weights(arch[-1], eco.READOUT_SIZE, eco.W_NORM_READOUT, rng))
+        p_num, lc_num, rc_num = eco.forward(g, pix, np.random.default_rng(2))
+        p_ref, lc_ref, rc_ref = _forward_numpy_reference_multi(g, pix, np.random.default_rng(2))
+        agree = float((p_num == p_ref).mean())
+        assert agree >= 0.9, f"arch={arch} 一致性仅 {agree:.2f}（语义疑似偏离）"
+        for a, b in zip(lc_num, lc_ref):
+            assert int(a.sum()) == int(b.sum()), f"arch={arch} 层发放数不一致"
 
 
 if __name__ == "__main__":
