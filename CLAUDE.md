@@ -80,7 +80,7 @@ Standalone script that batch-compresses images > 2MB in a hardcoded target direc
 - `eco_server.py` — 本地 `http.server` 服务（`python eco_server.py --port 8765`），托管 `eco_game.html` + API：
   `/api/state`（种群/配置/历史）、`/api/step`（推演一回合，返回 events+stats）、`/api/digit_image`、`/api/manual_feed`、`/api/config`
 - `eco_game.html` — 单文件前端：canvas 培养皿（点击个体解剖）、食物数字、统计曲线/存活直方图、参数滑块、手动喂食
-- `eco_tests.py` — 引擎 + 服务端测试（`python eco_tests.py`）；`_eco_smoke.py` — 30 回合冒烟基线
+
 
 ### 回合制规则（v3）
 
@@ -88,9 +88,9 @@ Standalone script that batch-compresses images > 2MB in a hardcoded target direc
 
 ### 关键常量（eco_engine.py 顶部）
 
-`T=40`（仿真步数）、`HIDDEN_SIZE=100`、`LEAK=0.94`、`THETA_HIDDEN=12.0`、`SURVIVAL_ROUNDS=20`（自然寿命）、`N_REPRO=50`（繁殖倍数）、`ASSORT_STRENGTH=0.5`（选型强度默认）、`CAPACITY=10000`（承载力）、`INIT_POP=1000`（初始/重播种群）、`DENSITY_FLOOR=0.05`、`POP_GROWTH=0.10`（每回合净增长率，密度加权）；产错死亡概率 `wrong_death_prob(survived)`：存活 0 → 100%、存活 1 → 50%、每多存活一回合 ×1.5、封顶 100%；结构突变概率 `P_GROW=0.40 / P_SPLIT=0.15 / P_MERGE=0.10 / P_PRUNE=0.10 / P_ADDRANDOM=0.03`，层数 1-4、每层 20-200、总隐藏 ≤400。
+`T=40`（仿真步数）、`HIDDEN_SIZE=100`、`LEAK=0.94`、`THETA_HIDDEN=12.0`、`SURVIVAL_ROUNDS=20`（自然寿命）、`N_REPRO=50`（繁殖倍数）、`ASSORT_STRENGTH=0.5`（选型强度默认）、`CAPACITY=10000`（承载力）、`INIT_POP=1000`（初始/重播种群）、`DENSITY_FLOOR=0.05`、`POP_GROWTH=0.10`（每回合净增长率，密度加权）；产错死亡概率 `wrong_death_prob(survived)`：存活 0 → 100%、存活 1 → 50%、每多存活一回合 ×1.5、封顶 99%结构突变概率 `P_GROW=0.40 / P_SPLIT=0.15 / P_MERGE=0.10 / P_PRUNE=0.10 / P_ADDRANDOM=0.03`，层数 1-4、每层 20-200、总隐藏 ≤400。
 
-**诚实基线**：纯权重进化无学习，正确率贴随机线（best ≈ 0.1-0.2）；natural_rate 基本不可达 0.95；单回合耗时随种群线性增长（pop 1000 时约 0.3s）。
+
 
 ## 其他
  - 使用中文回复，英文思考

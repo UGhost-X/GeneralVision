@@ -1,18 +1,15 @@
 # Python
 __pycache__/
 *.py[cod]
-*.egg-info/
-
-# Virtual environment
 .venv/
+venv/
 
-# Claude Code local settings
-.claude/settings.local.json
-.claude/settings.json
-.claude/scheduled_tasks.lock
-
-# Data (downloadable / regenerable)
+# 数据与产物（README 约定：需自行准备/为 gitignored 产物）
 data/
-
-# Evolution run artifacts
 checkpoints/
+evolution_curves.png
+snn_weights.js
+mnist_weights.json
+
+# Claude Code 本地配置
+.claude/
