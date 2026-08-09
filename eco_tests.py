@@ -350,6 +350,53 @@ def test_multilayer_forward_matches_reference():
             assert int(a.sum()) == int(b.sum()), f"arch={arch} 层发放数不一致"
 
 
+def test_architecture_inheritance():
+    """双亲架构不同：子代架构 = 存活更长亲代的架构（crossover 纯重组，不施加结构突变）。"""
+    rng = np.random.default_rng(4)
+    a = eco.Genome(name="a", layers=[
+        eco._random_weights(784, 100, eco.W_NORM_HIDDEN, rng),
+        eco._random_weights(100, 50, eco.W_NORM_HIDDEN, rng)],
+        readout=eco._random_weights(50, eco.READOUT_SIZE, eco.W_NORM_READOUT, rng), age=5)
+    b = eco.Genome(name="b", layers=[eco._random_weights(784, 80, eco.W_NORM_HIDDEN, rng)],
+                   readout=eco._random_weights(80, eco.READOUT_SIZE, eco.W_NORM_READOUT, rng), age=3)
+    child = eco.crossover(a, b, np.random.default_rng(9), weight_a=5, weight_b=3)
+    assert child.arch() == a.arch(), "存活更长的 a 应提供架构"
+    child2 = eco.crossover(a, b, np.random.default_rng(9), weight_a=3, weight_b=5)
+    assert child2.arch() == b.arch(), "存活更长的 b 应提供架构"
+
+
+def test_structural_mutations_bounded():
+    """任意结构突变后：1≤层数≤4、每层 20≤n≤200、总隐藏神经元≤400、维度链闭合。"""
+    rng = np.random.default_rng(0)
+    g = eco.random_genome("s", rng)
+    for _ in range(200):
+        c = eco._apply_structure(eco.crossover(g, g, rng), rng)
+        assert eco.MIN_LAYERS <= len(c.layers) <= eco.MAX_LAYERS, c.arch()
+        assert all(eco.MIN_NEURONS <= n <= eco.MAX_NEURONS for n in c.arch()), c.arch()
+        assert sum(c.arch()) <= eco.MAX_HIDDEN, c.arch()
+        assert c.layers[0].shape[0] == 784, "输入维应 784"
+        for W, nxt in zip(c.layers, c.layers[1:] + [c.readout]):
+            assert W.shape[1] == nxt.shape[0], f"维度链断裂: {W.shape} → {nxt.shape}"
+        assert c.readout.shape[1] == eco.READOUT_SIZE
+
+
+def test_silent_birth_preserves_output():
+    """静默神经元诞生（force="grow"）前后对同 S 的输出分布一致——行为保持是稳定性核心。"""
+    import copy
+    from data_loading import load_mnist
+    ti, _, _, _ = load_mnist()
+    rng = np.random.default_rng(1)
+    g = eco.random_genome("g", rng)
+    S = (np.random.default_rng(2).random((1, 784, eco.T), dtype=np.float32)
+         < (ti[5][None][:, :, None] * eco.SPIKE_GAIN)).astype(np.float32)
+    p0, lc0, rc0 = eco.forward_from_S(g, S)
+    g2 = eco._apply_structure(copy.deepcopy(g), np.random.default_rng(6), force="grow")
+    p1, lc1, rc1 = eco.forward_from_S(g2, S)
+    assert sum(g2.arch()) > sum(g.arch()), "grow 应增加神经元数"
+    # 静默神经元近零 → 不放电 → 输出分布一致
+    assert int(rc0.sum()) == int(rc1.sum()), "静默诞生不应改变产出发放"
+
+
 if __name__ == "__main__":
     for _name, _fn in sorted(globals().items()):
         if _name.startswith("test_") and callable(_fn):
