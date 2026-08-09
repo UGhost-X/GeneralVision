@@ -211,3 +211,82 @@ class Organism:
             "genome": self.genome.to_dict(),
             "digit_counts": self.digit_counts.tolist(),
         }
+
+
+# --------------------------------------------------------------------------- #
+# 批量前向（LIF + WTA + 读出）与预测
+# --------------------------------------------------------------------------- #
+THETA_BASE = 12.0  # 隐藏层/读出层阈值基数（× threshold_scale）
+
+
+def poisson_encode(x: torch.Tensor, rng: np.random.Generator) -> torch.Tensor:
+    r = torch.from_numpy(rng.random(x.shape, dtype=np.float32)).to(x.device)
+    return r.le(x).to(x)
+
+
+def _lif(x: torch.Tensor, v: torch.Tensor, leak: torch.Tensor, threshold: torch.Tensor):
+    """批量 LIF（软重置）。leak/threshold 为 [N,1]（每行不同基因可广播）。
+
+    说明：spikingjelly 的 functional.lif_step 要求标量 tau/阈值，无法按个体基因
+    批量，故手写（与旧 eco_engine 动力学一致：v=v·leak+x，v≥thr 发放，软重置）。
+    """
+    v = v * leak + x
+    spike = (v >= threshold).float()
+    v = v - spike * threshold
+    return spike, v
+
+
+def _wta(spikes: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+    """精确每行 top-k（含并列按索引序），其余置 0。k: [N] long。"""
+    N, H = spikes.shape
+    _, idx = torch.sort(spikes, dim=1, descending=True)
+    pos = torch.arange(H, device=spikes.device).unsqueeze(0).expand(N, H)
+    keep = pos < k.unsqueeze(1)
+    out = torch.zeros_like(spikes)
+    # 先 gather 成排序序空间再掩码，否则 keep 的列索引与 spikes 的列索引错位
+    out.scatter_(1, idx, spikes.gather(1, idx) * keep.float())
+    return out
+
+
+def forward_group(spike_seq: torch.Tensor, weights: List[torch.Tensor],
+                  genomes: List[Genome], cfg: Eco2Config):
+    """批量前向 T 步，返回 (out_sum [N,10], elig_acc 每层 [N,out,in])。
+
+    weights 每层为 [N, out, in]（已按种群 stack）；genomes 同 layer_sizes 分组内
+    每个体（提供每行不同的 leak/threshold_scale/input_gain/wta_k）。eligibility
+    在 T 步内以 eligibility_decay 累计（迹衰减），迹更新由 mstdp_linear_step 内部完成。
+    """
+    T, N, in_size = spike_seq.shape
+    n_layers = len(weights)
+    sizes = [in_size] + list(genomes[0].layer_sizes) + [10]
+    dev = spike_seq.device
+    leak = torch.tensor([g.leak for g in genomes], dtype=torch.float32, device=dev).unsqueeze(1)
+    thr = (torch.tensor([g.threshold_scale for g in genomes], dtype=torch.float32,
+                        device=dev) * THETA_BASE).unsqueeze(1)
+    gain = torch.tensor([g.input_gain for g in genomes], dtype=torch.float32,
+                        device=dev).unsqueeze(1)
+    wta_k = torch.tensor([g.wta_k for g in genomes], dtype=torch.long, device=dev)
+
+    vs = [torch.zeros(N, sizes[i + 1], device=dev) for i in range(n_layers)]
+    elig_acc = [torch.zeros(N, sizes[i + 1], sizes[i], device=dev)
+                for i in range(n_layers)]
+    tr_pre = [torch.zeros(N, sizes[i], device=dev) for i in range(n_layers)]
+    tr_post = [torch.zeros(N, sizes[i + 1], device=dev) for i in range(n_layers)]
+    out_sum = torch.zeros(N, 10, device=dev)
+
+    for t in range(T):
+        x = spike_seq[t] * gain  # [N, in]
+        for L in range(n_layers):
+            x_in = torch.einsum("bi,noi->no", x, weights[L])  # [N, out]
+            spike, vs[L] = _lif(x_in, vs[L], leak, thr)
+            if L < n_layers - 1:  # 隐层 WTA（读出层不用 WTA）
+                spike = _wta(spike, wta_k)
+            # mstdp_linear_step 内部更新 trace 并返回每步 eligibility
+            elig_t, (tr_pre[L], tr_post[L]) = sjf.learning.mstdp_linear_step(
+                x, spike, (tr_pre[L], tr_post[L]), weights[L],
+                tau_pre=cfg.tau_pre, tau_post=cfg.tau_post,
+            )
+            elig_acc[L] = elig_acc[L] * cfg.eligibility_decay + elig_t
+            x = spike  # 下一层输入
+        out_sum = out_sum + x  # x = 读出层脉冲
+    return out_sum, elig_acc
