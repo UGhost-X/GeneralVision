@@ -22,3 +22,6 @@ spikingjelly/
 
 # 本地设计/计划文档（不提交）
 docs/superpowers/
+
+# SDD 执行工作区（ledger/brief/report，gitignored 草稿）
+.superpowers/
