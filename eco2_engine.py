@@ -290,3 +290,35 @@ def forward_group(spike_seq: torch.Tensor, weights: List[torch.Tensor],
             x = spike  # 下一层输入
         out_sum = out_sum + x  # x = 读出层脉冲
     return out_sum, elig_acc
+
+
+# --------------------------------------------------------------------------- #
+# 学习 / 能量 / 死亡（Task 3）
+# --------------------------------------------------------------------------- #
+def apply_mstdp(weights: List[torch.Tensor], elig_acc: List[torch.Tensor],
+                reward: torch.Tensor, cfg: Eco2Config) -> None:
+    """原位 mSTDP 更新。reward: [N]（+1 对 / -1 错）。读出层为主，隐层可选弱更新。"""
+    n = len(weights)
+    for L in range(n):
+        factor = 1.0
+        if L < n - 1:  # 隐层
+            if not cfg.learn_hidden:
+                continue
+            factor = cfg.hidden_learn_factor
+        lr = cfg.lr_base * factor
+        w = weights[L]
+        w += lr * reward[:, None, None] * elig_acc[L]
+        w.clamp_(cfg.w_min, cfg.w_max)
+        if torch.isnan(w).any():
+            w.nan_to_num_(0.0)
+
+
+def settle_energy(energy: torch.Tensor, correct: torch.Tensor, cfg: Eco2Config) -> torch.Tensor:
+    return energy + torch.where(correct, cfg.e_gain, -cfg.e_cost) - cfg.metabolism
+
+
+def mark_deaths(energy: torch.Tensor, age: torch.Tensor, cfg: Eco2Config) -> torch.Tensor:
+    starved = energy <= 0.0
+    if cfg.age_max is not None:
+        starved = starved | (age >= cfg.age_max)
+    return starved

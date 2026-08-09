@@ -109,3 +109,52 @@ def test_wta_topk():
     out = _wta(spikes, k)
     assert (out[0] == torch.tensor([3., 0., 2., 0., 0.])).all()   # top2: 3,2
     assert (out[1] == torch.tensor([0., 5., 0., 4., 2.])).all()   # top3: 5,4,2
+
+
+# --------------------------------------------------------------------------- #
+# Task 3: mSTDP 学习更新 + 能量结算 + 死亡判定
+# --------------------------------------------------------------------------- #
+import torch
+from eco2_engine import apply_mstdp, settle_energy, mark_deaths, Eco2Config, Genome
+
+def test_mstdp_update_sign():
+    """已知 reward 方向 → 权重变化方向正确。"""
+    cfg = Eco2Config(lr_base=0.1, w_min=-2.0, w_max=2.0)
+    N, OUT, IN = 2, 3, 4
+    w = torch.randn(N, OUT, IN) * 0.1
+    w0 = w.clone()
+    elig = torch.ones(N, OUT, IN) * 0.5
+    reward = torch.tensor([1.0, -1.0])
+    apply_mstdp([w], [elig], reward, cfg)
+    # 个体0 正确(reward+1)：w 增大；个体1 错误(reward-1)：w 减小
+    assert (w[0] > w0[0]).all()
+    assert (w[1] < w0[1]).all()
+
+def test_mstdp_clamp():
+    cfg = Eco2Config(lr_base=10.0, w_min=-1.0, w_max=1.0)
+    w = torch.zeros(2, 2, 2)
+    elig = torch.ones(2, 2, 2) * 10.0
+    apply_mstdp([w], [elig], torch.tensor([1.0, -1.0]), cfg)
+    assert (w <= 1.0).all() and (w >= -1.0).all()
+
+def test_settle_energy():
+    cfg = Eco2Config(e_gain=10.0, e_cost=8.0, metabolism=1.0)
+    e = torch.tensor([100.0, 100.0])
+    correct = torch.tensor([True, False])
+    out = settle_energy(e, correct, cfg)
+    assert out[0].item() == 100 + 10 - 1      # 正确
+    assert out[1].item() == 100 - 8 - 1       # 错误
+
+def test_mark_deaths_starvation():
+    cfg = Eco2Config(age_max=None)
+    e = torch.tensor([0.0, 5.0, -1.0, 100.0])
+    age = torch.tensor([0, 0, 0, 0])
+    dead = mark_deaths(e, age, cfg)
+    assert dead.tolist() == [True, False, True, False]
+
+def test_mark_deaths_age():
+    cfg = Eco2Config(age_max=50)
+    e = torch.tensor([100.0, 100.0])
+    age = torch.tensor([49, 50])
+    dead = mark_deaths(e, age, cfg)
+    assert dead.tolist() == [False, True]
