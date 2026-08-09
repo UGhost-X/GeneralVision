@@ -13,3 +13,6 @@ mnist_weights.json
 
 # Claude Code 本地配置
 .claude/
+
+# 第三方克隆库（spikingjelly 自带 git 历史，以外部依赖引用）
+spikingjelly/
