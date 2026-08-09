@@ -1,11 +1,12 @@
 # eco_engine.py（本任务先写：常量、Genome、normalize、random_genome、crossover）
-"""LIF 生态游戏引擎（v3 回合制）：喂食-产出-淘汰-有性繁殖（纯 numpy，一生无学习）。
+"""LIF 生态游戏引擎（v4 回合制）：喂食-产出-淘汰-有性繁殖（纯 numpy，一生无学习）。
 
 生物体 = LIF 网络（784 输入 → 100 隐藏神经元 → 10 产出神经元），所有权重
-出生即随机、一生固定。一回合喂 1 个数字：随机淘汰 30%（非自然，不计停止指标），
-活到存活回合数上限自然死亡；存活者按年龄相似度选型配对（可调强度 s）、
+出生即随机、一生固定。一回合喂 1 个数字：产错按已存活回合数的概率死亡
+（首回合 100%、存活 1 回合 50%、每多存活一回合死亡概率 ×1.5，封顶 100%）；
+未死但活到存活回合数上限自然死亡；存活者按年龄相似度选型配对（可调强度 s）、
 按存活时长加权交叉繁殖，产仔数 × 存活奖励 alpha（1/每回合存活率），
-密度依赖 + 承载力封顶。输出标准化事件流供前端播放。
+密度依赖 + 承载力封顶（繁殖覆盖死亡 + 净增长向承载力）。输出标准化事件流供前端播放。
 """
 from __future__ import annotations
 
@@ -34,6 +35,7 @@ ASSORT_TAU = 2.0         # 选型交配：年龄相似度核宽（回合），�
 ASSORT_STRENGTH = 0.5    # 默认选型强度 s（0-1）
 CAPACITY = 10000         # 环境承载力（种群上限）
 DENSITY_FLOOR = 0.05     # 密度地板：承载力处仍有 5% 替代性繁殖，防"满→90%暴毙→回填"锯齿
+POP_GROWTH = 0.10        # 每回合净增长率（密度加权，logistic 近似）：种群向承载力缓慢增长
 INIT_POP = 1000          # 初始/全灭重播种群数
 
 # ---- 多层架构边界（v3 结构突变） ----
@@ -295,6 +297,18 @@ def death_cause(g: Genome, correct: bool, survival_rounds: int) -> str | None:
     return None
 
 
+def wrong_death_prob(survived: int) -> float:
+    """产错时的死亡概率（v4，以已存活回合数计）。
+
+    基础策略是"产错即死"；每多存活一回合，产错存活概率提升既有死亡概率的 50%
+    （即死亡概率 ×1.5），封顶 100%：首回合(存活 0) → 100%；存活 1 → 50%；
+    存活 2 → 75%；存活 3+ → 100%。
+    """
+    if survived <= 0:
+        return 1.0
+    return min(1.0, 0.5 * 1.5 ** (survived - 1))
+
+
 @numba.njit(cache=True)
 def _forward_core_multi(S: np.ndarray, layers: numba.typed.List, Wr: np.ndarray,
                         max_n: int, leak: float, theta_h: float, theta_r: float,
@@ -500,6 +514,7 @@ class Ecosystem:
         events.append({"type": "round_begin", "round": self.round,
                        "food_idx": food_idx, "food_label": food_lbl})
 
+        start_pop = len(self.pop)
         survivors: list[Genome] = []
         avg_correct = 0.0
         # 每回合只生成一份泊松脉冲 S，全部个体共享（省 5000×0.27ms 的逐只脉冲生成；确定性由 seed 派生保证）
@@ -515,26 +530,22 @@ class Ecosystem:
                            "correct": bool(correct), "age": g.age,
                            "readout_profile": rc.mean(axis=0).round(2).tolist()})
             avg_correct += float(correct)
-        avg_correct /= max(1, len(self.pop))
-
-        # ---- 淘汰规则（v3.2）：随机淘汰 30%（非自然，不计停止指标）+ 剩余 70% 中 age>存活回合数自然死亡 ----
-        order = list(self.pop)
-        self.rng.shuffle(order)                                   # 随机洗牌 → 前 70% 存活
-        n_keep = max(1, round(len(order) * 0.70))                 # 随机存活 70%
-        bottom_ids = {id(g) for g in order[n_keep:]}              # 随机 30% 非自然死亡
-        aged_ids = {id(g) for g in order[:n_keep] if g.age > self.survival_rounds}  # 剩余高龄自然死亡
-        survivors = [g for g in self.pop if id(g) not in bottom_ids and id(g) not in aged_ids]
-        for g in self.pop:
-            if id(g) in bottom_ids:
+            # ---- 死亡判定（v4）：产错 → 按已存活回合数的概率死亡；未死且超龄 → 自然死亡 ----
+            died = False
+            if not correct and self.rng.random() < wrong_death_prob(g.age - 1):
                 self.total_deaths += 1
                 events.append({"type": "death", "name": g.name, "cause": "unnatural"})
-            elif id(g) in aged_ids:
+                died = True
+            if not died and g.age > self.survival_rounds:
                 self.natural_deaths += 1
                 self.total_deaths += 1
                 events.append({"type": "death", "name": g.name, "cause": "natural"})
+                died = True
+            if not died:
+                survivors.append(g)
+        avg_correct /= max(1, start_pop)
 
         # ---- 存活奖励 alpha：存活率 = 本回合存活者 / 回合开始种群 ----
-        start_pop = len(self.pop)
         alpha = survival_alpha(len(survivors), start_pop)
         self.last_survival_rate = (len(survivors) / start_pop) if start_pop > 0 else 0.0
         self.last_alpha = alpha
@@ -546,10 +557,12 @@ class Ecosystem:
         if pairs:
             density = max(DENSITY_FLOOR, 1.0 - start_pop / self.capacity)
             brood = int(round(self.survival_rounds * self.n_repro * alpha * density))
-            # v3 选项 2：不强制回填到满容量——只生到能覆盖本回合死亡的量（种群保持当前规模），
-            # 不再 min(承载力-存活者) 让种群一回合跳到承载力（那是 5000 大种群回合变慢的根源）。
-            room = max(0, start_pop - len(survivors))
-            target = min(room, len(pairs) * brood)
+            # v4：繁殖 = 覆盖当回合死亡 + 净增长向承载力（密度加权的 logistic 近似），
+            # 由承载力 headroom 与繁殖力封顶——不再钉死在初始种群规模。
+            room = max(0, start_pop - len(survivors))             # 死亡回填量
+            headroom = max(0, self.capacity - len(survivors))     # 向承载力的剩余空间
+            growth = round(start_pop * POP_GROWTH * density)      # 净增长：越接近承载力、密度越低、增长越慢
+            target = min(room + growth, len(pairs) * brood, headroom)
             for k in range(target):
                 a, b = pairs[k % len(pairs)]
                 child = _apply_structure(crossover(a, b, self.rng,
