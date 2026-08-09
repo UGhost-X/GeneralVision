@@ -24,8 +24,6 @@ HIDDEN_SIZE = 100
 
 LEAK = 0.94
 THETA_HIDDEN = 12.0
-LEAK_OUTPUT = 0.9
-THETA_OUTPUT = 0.5
 
 INPUT_W_SCALE = 0.65
 HIDDEN_W_SCALE = 0.75
@@ -47,9 +45,14 @@ CAPACITY = 10000
 INIT_POP = 1000
 SELECT_PER_DIGIT = 100
 FITNESS_LAMBDA = 0.5
-SCREEN_POOL_SIZE = 3000
-SCREEN_STEPS = 12
-SCREEN_SAMPLES = 6
+SCREEN_POOL_SIZE = 1500
+SCREEN_STEPS = 8
+SCREEN_SAMPLES = 4
+SCREEN_READOUT_SAMPLES_PER_DIGIT = 1
+READOUT_LAMBDA = 0.1
+P_READOUT_MUTATION = 0.30
+P_READOUT_SPARSE_RESET = 0.05
+TRAIT_MUTATION_RATE = 0.25
 REPRO_SUCCESS_BASE = 0.9
 REPRO_WRONG_PENALTY = 0.4
 NO_REPRO_DEATH_ROUNDS = 3
@@ -136,11 +139,19 @@ def _sample_spikes(
 class Genome:
     layer_sizes: Tuple[int, ...]
     weights: np.ndarray
+    longevity_bonus: int = 0
+    fecundity: float = 1.0
+    wrong_tolerance: float = 1.0
+    mutation_rate: float = 1.0
 
     def to_dict(self) -> Dict[str, object]:
         return {
             "layer_sizes": list(self.layer_sizes),
             "weights_size": int(self.weights.size),
+            "longevity_bonus": self.longevity_bonus,
+            "fecundity": self.fecundity,
+            "wrong_tolerance": self.wrong_tolerance,
+            "mutation_rate": self.mutation_rate,
         }
 
 
@@ -183,7 +194,14 @@ def _random_weights(
 def random_genome(rng: Optional[np.random.Generator] = None) -> Genome:
     if rng is None:
         rng = np.random.default_rng()
-    return Genome((HIDDEN_SIZE,), _random_weights((HIDDEN_SIZE,), rng))
+    return Genome(
+        (HIDDEN_SIZE,),
+        _random_weights((HIDDEN_SIZE,), rng),
+        longevity_bonus=int(rng.integers(0, 3)),
+        fecundity=float(rng.uniform(0.8, 1.2)),
+        wrong_tolerance=float(rng.uniform(0.8, 1.2)),
+        mutation_rate=float(rng.uniform(0.8, 1.2)),
+    )
 
 
 def _unflatten(
@@ -221,6 +239,21 @@ def _flatten(
     parts.append(np.asarray(out_mat).ravel())
     parts.append(np.asarray(out_bias).ravel())
     return np.concatenate(parts)
+
+
+def _output_offset(layer_sizes: Sequence[int]) -> int:
+    offset = 0
+    prev = INPUT_SIZE
+    for n_hidden in layer_sizes:
+        offset += prev * n_hidden + n_hidden
+        prev = n_hidden
+    return offset
+
+
+def _softmax(logits: np.ndarray) -> np.ndarray:
+    shifted = logits - logits.max(axis=1, keepdims=True)
+    exp = np.exp(shifted)
+    return exp / exp.sum(axis=1, keepdims=True)
 
 
 def _grow_silent(
@@ -418,16 +451,72 @@ def _insert_random_layer(
     return True, out_mat, out_bias
 
 
+def _mutate_readout(
+    out_mat: np.ndarray,
+    out_bias: np.ndarray,
+    rng: np.random.Generator,
+    mutation_rate: float,
+) -> None:
+    if rng.random() < P_READOUT_MUTATION * mutation_rate:
+        out_mat += rng.normal(0.0, 0.02, size=out_mat.shape).astype(
+            np.float32
+        )
+        out_bias += rng.normal(0.0, 0.02, size=out_bias.shape).astype(
+            np.float32
+        )
+    if rng.random() < P_READOUT_SPARSE_RESET * mutation_rate:
+        mask = rng.random(out_mat.shape) < 0.05
+        n_reset = int(mask.sum())
+        if n_reset > 0:
+            out_mat[mask] = rng.normal(
+                0.0, 0.05, size=n_reset
+            ).astype(np.float32)
+
+
 def _mutate_genome(genome: Genome, rng: np.random.Generator) -> Genome:
+    mutation_rate = max(0.25, min(3.0, genome.mutation_rate))
     rolls = [
-        rng.random() < P_GROW,
-        rng.random() < P_SPLIT,
-        rng.random() < P_MERGE,
-        rng.random() < P_PRUNE,
-        rng.random() < P_ADDRANDOM,
+        rng.random() < min(1.0, P_GROW * mutation_rate),
+        rng.random() < min(1.0, P_SPLIT * mutation_rate),
+        rng.random() < min(1.0, P_MERGE * mutation_rate),
+        rng.random() < min(1.0, P_PRUNE * mutation_rate),
+        rng.random() < min(1.0, P_ADDRANDOM * mutation_rate),
     ]
-    if not any(rolls):
-        return Genome(tuple(genome.layer_sizes), genome.weights)
+    readout_mutation = rng.random() < min(
+        1.0, (P_READOUT_MUTATION + P_READOUT_SPARSE_RESET) * mutation_rate
+    )
+    trait_mutation = rng.random() < TRAIT_MUTATION_RATE
+
+    longevity_bonus = int(genome.longevity_bonus)
+    fecundity = float(genome.fecundity)
+    wrong_tolerance = float(genome.wrong_tolerance)
+    next_mutation_rate = float(genome.mutation_rate)
+    if trait_mutation:
+        longevity_bonus = max(
+            0, min(10, longevity_bonus + int(rng.integers(-1, 2)))
+        )
+        fecundity = max(
+            0.5,
+            min(2.0, fecundity * math.exp(rng.normal(0.0, 0.1))),
+        )
+        wrong_tolerance = max(
+            0.5,
+            min(3.0, wrong_tolerance * math.exp(rng.normal(0.0, 0.1))),
+        )
+        next_mutation_rate = max(
+            0.5,
+            min(3.0, next_mutation_rate * math.exp(rng.normal(0.0, 0.15))),
+        )
+
+    if not any(rolls) and not readout_mutation:
+        return Genome(
+            tuple(genome.layer_sizes),
+            genome.weights,
+            longevity_bonus,
+            fecundity,
+            wrong_tolerance,
+            next_mutation_rate,
+        )
 
     layer_sizes = list(genome.layer_sizes)
     mats, biases, out_mat, out_bias = _unflatten(
@@ -454,10 +543,16 @@ def _mutate_genome(genome: Genome, rng: np.random.Generator) -> Genome:
         _, out_mat, out_bias = _insert_random_layer(
             layer_sizes, mats, biases, out_mat, out_bias, rng
         )
+    if readout_mutation:
+        _mutate_readout(out_mat, out_bias, rng, mutation_rate)
 
     return Genome(
         tuple(layer_sizes),
         _flatten(mats, biases, out_mat, out_bias),
+        longevity_bonus,
+        fecundity,
+        wrong_tolerance,
+        next_mutation_rate,
     )
 
 
@@ -483,8 +578,12 @@ def crossover(
     layer_sizes = list(donor.layer_sizes)
     flat = donor.weights.copy()
     if tuple(layer_sizes) == other.layer_sizes:
-        start = int(rng.integers(0, 2))
-        flat[start::2] = other.weights[start::2]
+        if rng.random() < 0.5:
+            readout_offset = _output_offset(layer_sizes)
+            flat[readout_offset:] = other.weights[readout_offset:]
+        else:
+            start = int(rng.integers(0, 2))
+            flat[start::2] = other.weights[start::2]
     n_jitter = max(1, int(flat.size * 0.02))
     jitter_pos = rng.integers(0, flat.size, size=n_jitter)
     flat[jitter_pos] += rng.uniform(-0.03, 0.03, size=n_jitter).astype(
@@ -494,7 +593,17 @@ def crossover(
     big_pos = rng.integers(0, flat.size, size=n_big)
     flat[big_pos] += rng.uniform(-0.5, 0.5, size=n_big).astype(np.float32)
 
-    return _mutate_genome(Genome(tuple(layer_sizes), flat), rng)
+    return _mutate_genome(
+        Genome(
+            tuple(layer_sizes),
+            flat,
+            int(donor.longevity_bonus),
+            float((donor.fecundity + other.fecundity) / 2.0),
+            float((donor.wrong_tolerance + other.wrong_tolerance) / 2.0),
+            float((donor.mutation_rate + other.mutation_rate) / 2.0),
+        ),
+        rng,
+    )
 
 
 @njit(cache=True)
@@ -509,9 +618,8 @@ def _forward_core_multi(
     n_pop = weights.shape[0]
     n_steps = spike_idx.shape[0]
     n_samples = spike_idx.shape[1]
-    out_counts = np.zeros((n_pop, 10), dtype=np.int32)
-    out_mem = np.zeros((n_pop, 10), dtype=np.float32)
-    last_mem = np.zeros((n_pop, 10), dtype=np.float32)
+    hidden_counts = np.zeros((n_pop, MAX_HIDDEN_SIZE), dtype=np.float32)
+    logits = np.zeros((n_pop, 10), dtype=np.float32)
 
     for i in range(n_pop):
         depth = 0
@@ -568,25 +676,21 @@ def _forward_core_multi(
                     mem[l, best] = 0.0
 
             last_n = sizes[i, depth - 1]
-            start = offsets[i, 4]
-            for o in range(10):
-                acc = 0.0
-                for p in range(last_n):
-                    if spk[depth - 1, p] != 0.0:
-                        acc += weights[i, start + p * 10 + o] * spk[depth - 1, p]
-                out_mem[i, o] = (
-                    LEAK_OUTPUT * out_mem[i, o]
-                    + weights[i, start + last_n * 10 + o]
-                    + acc
-                )
-                if out_mem[i, o] >= THETA_OUTPUT:
-                    out_mem[i, o] = 0.0
-                    out_counts[i, o] += 1
+            for p in range(last_n):
+                if spk[depth - 1, p] != 0.0:
+                    hidden_counts[i, p] += 1.0
 
+        last_n = sizes[i, depth - 1]
+        start = offsets[i, 4]
         for o in range(10):
-            last_mem[i, o] = out_mem[i, o]
+            acc = weights[i, start + last_n * 10 + o]
+            for p in range(last_n):
+                acc += (
+                    hidden_counts[i, p] / n_steps
+                ) * weights[i, start + p * 10 + o]
+            logits[i, o] = acc
 
-    return out_counts, last_mem
+    return logits, hidden_counts
 
 
 def _pack_batch(
@@ -681,8 +785,8 @@ def _forward_group_vectorized(
         for layer_idx in range(depth)
     ]
     spk: List[np.ndarray] = [None] * depth
-    out_mem = np.zeros((n_pop, 10), dtype=np.float32)
-    out_counts = np.zeros((n_pop, 10), dtype=np.int32)
+    last_n = mats[-1].shape[2]
+    hidden_counts = np.zeros((n_pop, last_n), dtype=np.float32)
 
     for t in range(n_steps):
         selected = np.take(mats[0], spike_idx[t], axis=1)
@@ -699,13 +803,11 @@ def _forward_group_vectorized(
             )
             spk[layer_idx] = _vectorized_wta(mem[layer_idx])
 
-        acc = np.einsum("np,npo->no", spk[-1], out_mat)
-        out_mem = out_mem * LEAK_OUTPUT + acc + out_bias
-        fire = out_mem >= THETA_OUTPUT
-        out_counts += fire
-        out_mem[fire] = 0.0
+        hidden_counts += spk[-1]
 
-    return out_counts, out_mem
+    hidden_rates = hidden_counts / float(n_steps)
+    logits = np.einsum("np,npo->no", hidden_rates, out_mat) + out_bias
+    return logits, hidden_rates
 
 
 def _forward_numba_batch(
@@ -714,16 +816,10 @@ def _forward_numba_batch(
     spike_vals: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
     weights, sizes, offsets, lengths = _pack_batch(genomes)
-    counts, mem = _forward_core_multi(
+    logits, hidden_counts = _forward_core_multi(
         weights, sizes, offsets, lengths, spike_idx, spike_vals
     )
-    predictions = np.where(
-        counts.max(axis=1) > 0,
-        counts.argmax(axis=1),
-        mem.argmax(axis=1),
-    ).astype(np.int32)
-    rates = counts.astype(np.float32) / float(T)
-    return predictions, rates
+    return logits, hidden_counts
 
 
 def forward(
@@ -750,7 +846,7 @@ def forward(
             mats, biases, out_mat, out_bias = _stack_genome_group(
                 selected, layer_sizes
             )
-            counts, mem = _forward_group_vectorized(
+            logits, _ = _forward_group_vectorized(
                 mats,
                 biases,
                 out_mat,
@@ -758,18 +854,57 @@ def forward(
                 spike_idx,
                 spike_vals,
             )
-            predictions[indices] = np.where(
-                counts.max(axis=1) > 0,
-                counts.argmax(axis=1),
-                mem.argmax(axis=1),
-            ).astype(np.int32)
-            rates[indices] = counts.astype(np.float32) / float(T)
+            predictions[indices] = logits.argmax(axis=1).astype(np.int32)
+            rates[indices] = _softmax(logits)
         else:
-            predictions[indices], rates[indices] = _forward_numba_batch(
-                selected, spike_idx, spike_vals
-            )
+            logits, _ = _forward_numba_batch(selected, spike_idx, spike_vals)
+            predictions[indices] = logits.argmax(axis=1).astype(np.int32)
+            rates[indices] = _softmax(logits)
 
     return predictions, rates
+
+
+def extract_hidden_features(
+    genomes: Sequence[Genome],
+    spikes: Tuple[np.ndarray, np.ndarray],
+) -> List[np.ndarray]:
+    spike_idx, spike_vals = spikes
+    if not genomes:
+        return []
+
+    groups: Dict[Tuple[int, ...], List[int]] = {}
+    for idx, genome in enumerate(genomes):
+        groups.setdefault(tuple(genome.layer_sizes), []).append(idx)
+
+    features: List[Optional[np.ndarray]] = [None] * len(genomes)
+    for layer_sizes, indices in groups.items():
+        selected = [genomes[i] for i in indices]
+        if len(selected) >= 8:
+            mats, biases, out_mat, out_bias = _stack_genome_group(
+                selected, layer_sizes
+            )
+            _, hidden_rates = _forward_group_vectorized(
+                mats,
+                biases,
+                out_mat,
+                out_bias,
+                spike_idx,
+                spike_vals,
+            )
+            for j, idx in enumerate(indices):
+                features[idx] = hidden_rates[j].astype(np.float32)
+        else:
+            _, hidden_counts = _forward_numba_batch(
+                selected, spike_idx, spike_vals
+            )
+            n_steps = spike_idx.shape[0]
+            last_n = layer_sizes[-1]
+            for j, idx in enumerate(indices):
+                features[idx] = (
+                    hidden_counts[j, :last_n] / float(n_steps)
+                ).astype(np.float32)
+
+    return [feature for feature in features if feature is not None]
 
 
 @dataclass
@@ -854,6 +989,10 @@ class Organism:
             "failed_repro_rounds": self.failed_repro_rounds,
             "layer_sizes": list(self.genome.layer_sizes),
             "weights_size": int(self.genome.weights.size),
+            "longevity_bonus": self.genome.longevity_bonus,
+            "fecundity": self.genome.fecundity,
+            "wrong_tolerance": self.genome.wrong_tolerance,
+            "mutation_rate": self.genome.mutation_rate,
         }
         if include_weights:
             data["weights"] = self.genome.weights.tolist()
@@ -925,6 +1064,10 @@ class Ecosystem:
                 genome=Genome(
                     tuple(genome.layer_sizes),
                     genome.weights.copy(),
+                    genome.longevity_bonus,
+                    genome.fecundity,
+                    genome.wrong_tolerance,
+                    genome.mutation_rate,
                 ),
                 born_round=self.round,
                 correct=True,
@@ -951,12 +1094,60 @@ class Ecosystem:
             accuracy[:, digit] = (predictions == digit).astype(np.float32)
         return accuracy
 
+    def _fit_readouts(self, genomes: Sequence[Genome]) -> None:
+        if not genomes:
+            return
+        sample_indices: List[int] = []
+        sample_labels: List[int] = []
+        for digit in range(10):
+            candidates = np.flatnonzero(self._train_labels == digit)
+            chosen = self.rng.choice(
+                candidates,
+                size=min(SCREEN_READOUT_SAMPLES_PER_DIGIT, len(candidates)),
+                replace=False,
+            )
+            sample_indices.extend(int(i) for i in chosen)
+            sample_labels.extend([digit] * len(chosen))
+
+        feature_sets: List[List[np.ndarray]] = [
+            [] for _ in range(len(genomes))
+        ]
+        for sample_index in sample_indices:
+            image = self._train_images[sample_index]
+            spikes = _sample_spikes(image, self.rng)
+            features = extract_hidden_features(genomes, spikes)
+            for i, feature in enumerate(features):
+                feature_sets[i].append(feature)
+
+        n_samples = len(sample_indices)
+        targets = np.zeros((n_samples, 10), dtype=np.float32)
+        targets[np.arange(n_samples), sample_labels] = 1.0
+
+        for i, genome in enumerate(genomes):
+            features = np.stack(feature_sets[i]).astype(np.float64)
+            augmented = np.column_stack(
+                [features, np.ones(n_samples, dtype=np.float64)]
+            )
+            dim = augmented.shape[1]
+            gram = augmented.T @ augmented + READOUT_LAMBDA * np.eye(dim)
+            readout = np.linalg.pinv(gram) @ augmented.T @ targets.astype(
+                np.float64
+            )
+            offset = _output_offset(genome.layer_sizes)
+            last_n = genome.layer_sizes[-1]
+            genome.weights[offset : offset + last_n * 10] = (
+                readout[:-1].ravel().astype(np.float32)
+            )
+            genome.weights[offset + last_n * 10 :] = readout[-1].astype(
+                np.float32
+            )
+
     def _select_founding_specs(
         self,
         per_digit: int,
     ) -> List[Tuple[Genome, int]]:
         target = per_digit * 10
-        pool_size = max(SCREEN_POOL_SIZE, target * 3)
+        pool_size = max(SCREEN_POOL_SIZE, target + target // 2)
         foods = [self._pick_food(digit) for digit in range(10)]
         cheap_spikes = {
             digit: _sample_spikes(
@@ -1024,6 +1215,7 @@ class Ecosystem:
                     used[idx] = True
                     digit_counts[digit] += 1
 
+        self._fit_readouts([genome for genome, _ in selected])
         return selected
 
     def _pick_food(self, digit: Optional[int] = None) -> Dict[str, object]:
@@ -1100,9 +1292,11 @@ class Ecosystem:
     def _pair_repro_success(self, first: Organism, second: Organism) -> float:
         probability = REPRO_SUCCESS_BASE
         if not first.correct:
-            probability *= REPRO_WRONG_PENALTY
+            tolerance = max(0.1, first.genome.wrong_tolerance)
+            probability *= REPRO_WRONG_PENALTY ** (1.0 / tolerance)
         if not second.correct:
-            probability *= REPRO_WRONG_PENALTY
+            tolerance = max(0.1, second.genome.wrong_tolerance)
+            probability *= REPRO_WRONG_PENALTY ** (1.0 / tolerance)
         return probability
 
     def _offspring_counts(
@@ -1117,8 +1311,20 @@ class Ecosystem:
         raw_weights = []
         for first, second in pairs:
             age_sum = first.age + second.age + 1
+            fecundity = (
+                first.genome.fecundity * second.genome.fecundity
+            )
             raw_weights.append(
-                max(1, int(age_sum * self.config.n_repro * alpha * density_factor))
+                max(
+                    1,
+                    int(
+                        age_sum
+                        * self.config.n_repro
+                        * alpha
+                        * density_factor
+                        * fecundity
+                    ),
+                )
             )
         weights = np.asarray(raw_weights, dtype=np.float64)
         total = float(weights.sum())
@@ -1205,7 +1411,8 @@ class Ecosystem:
             organism.prediction = int(predictions[idx])
             organism.last_digit = label
             organism.age += 1
-            if organism.age >= self.config.survival_rounds:
+            lifespan = self.config.survival_rounds + organism.genome.longevity_bonus
+            if organism.age >= lifespan:
                 self._kill(organism, "natural")
 
         survivors = [o for o in alive_before if o.alive]
