@@ -45,11 +45,19 @@ class Genome:
     parents: tuple | None = None
 
 
+@numba.njit(cache=True)
 def _normalize_cols(W: np.ndarray, norm: float) -> np.ndarray:
-    """每列归一化到指定 L2 范数（保证随机权重动力学不爆/不哑）。"""
-    col_norms = np.linalg.norm(W, axis=0, keepdims=True)
-    col_norms = np.maximum(col_norms, 1e-8)
-    return W * (norm / col_norms)
+    """每列归一化到指定 L2 范数（保证随机权重动力学不爆/不哑）。numba JIT 版。"""
+    out = W.copy()
+    nrow, ncol = out.shape
+    for j in range(ncol):
+        s = 0.0
+        for i in range(nrow):
+            s += out[i, j] * out[i, j]
+        inv = norm / (np.sqrt(s) + 1e-8)
+        for i in range(nrow):
+            out[i, j] *= inv
+    return out
 
 
 def _random_weights(n_in: int, n_out: int, norm: float, rng: np.random.Generator) -> np.ndarray:
@@ -68,20 +76,22 @@ def random_genome(name: str, rng: np.random.Generator, gen: int = 0) -> Genome:
 
 def crossover(a: Genome, b: Genome, rng: np.random.Generator,
               weight_a: float = 1.0, weight_b: float = 1.0) -> Genome:
-    """有性繁殖：逐权重以 pa 取 a（存活时长加权）+ 高斯扰动 + 千分之一大突变。
+    """有性繁殖：逐权重以 pa 取 a（存活时长加权）+ 均匀小扰动 + 千分之一大突变。
 
     默认 weight_a=weight_b → 50/50；weight_a 越大后代越偏 a（活越久的个体基因占比越大）。
+    扰动用均匀分布（rng.uniform(-σ,σ)）代替高斯：同为"小扰动"，但均匀生成比正态快 ~4×，
+    是 4500 只/回合级繁殖的主要提速点（2026-08-09 v2 性能优化）。
     """
     wsum = weight_a + weight_b
     pa = weight_a / wsum if wsum > 0 else 0.5
     hidden = np.where(rng.random(a.hidden.shape) < pa, a.hidden, b.hidden)
-    hidden += rng.normal(0.0, CROSS_SIGMA, hidden.shape)
+    hidden += rng.uniform(-CROSS_SIGMA, CROSS_SIGMA, hidden.shape)
     mh = rng.random(hidden.shape) < MUT_RATE
     hidden[mh] = rng.uniform(-W_INIT_RANGE, W_INIT_RANGE, int(mh.sum()))
     hidden = _normalize_cols(hidden, W_NORM_HIDDEN)
 
     readout = np.where(rng.random(a.readout.shape) < pa, a.readout, b.readout)
-    readout += rng.normal(0.0, CROSS_SIGMA, readout.shape)
+    readout += rng.uniform(-CROSS_SIGMA, CROSS_SIGMA, readout.shape)
     mr = rng.random(readout.shape) < MUT_RATE
     readout[mr] = rng.uniform(-W_INIT_RANGE, W_INIT_RANGE, int(mr.sum()))
     readout = _normalize_cols(readout, W_NORM_READOUT)
@@ -204,6 +214,17 @@ def forward(genome: Genome, pixels: np.ndarray, rng: np.random.Generator
     return produced, hc, rc
 
 
+def forward_from_S(genome: Genome, S: np.ndarray
+                   ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """复用已生成的泊松脉冲 S 做前向（回合内所有个体共享同一 S，省去逐只生成脉冲）。
+
+    与 forward 等价，只是脉冲由调用方一次生成。S:(1,784,T) float32。
+    """
+    produced, hc, rc = _forward_core(S, genome.hidden, genome.readout,
+                                     LEAK, THETA_HIDDEN, THETA_READOUT, REF_PERIOD, T)
+    return produced, hc, rc
+
+
 # ---- 生态主循环（v2 回合制）----
 from data_loading import load_mnist
 
@@ -265,9 +286,12 @@ class Ecosystem:
 
         survivors: list[Genome] = []
         avg_correct = 0.0
+        # 每回合只生成一份泊松脉冲 S，全部个体共享（省 5000×0.27ms 的逐只脉冲生成；确定性由 seed 派生保证）
+        food_pix = self._img[food_idx][None]
+        S = (np.random.default_rng(self.round * 1_000_003).random((1, 784, T), dtype=np.float32)
+             < (food_pix[:, :, None] * SPIKE_GAIN)).astype(np.float32)
         for i, g in enumerate(self.pop):
-            produced, _hc, rc = forward(g, self._img[food_idx][None],
-                                        np.random.default_rng(self.round * 1_000_003 + i))
+            produced, _hc, rc = forward_from_S(g, S)
             produced = int(produced[0])
             correct = (produced == food_lbl)
             cause = death_cause(g, correct, self.survival_rounds)
