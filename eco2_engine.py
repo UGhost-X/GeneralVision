@@ -99,16 +99,19 @@ def random_genome(rng: np.random.Generator) -> Genome:
 
 
 def mutate_genome(g: Genome, rng: np.random.Generator) -> Genome:
-    """生态基因高斯扰动 + 结构基因偶发扰动，全部钳制在范围内。"""
-    n = rng.normal(0, 1)
-    layer_sizes = tuple(
-        _clamp(int(s * (1.0 + 0.1 * n)), 32, 128) for s in g.layer_sizes
-    )
-    # 偶发增删层
-    if rng.random() < 0.05 and len(layer_sizes) < 3:
+    """生态基因高斯扰动 + 结构基因偶发扰动，全部钳制在范围内。
+
+    结构变异为偶发事件：默认保持亲代结构，仅 ~15-20% 概率发生增层/删层/缩放。
+    """
+    layer_sizes = g.layer_sizes
+    r = rng.random()
+    if r < 0.05 and len(layer_sizes) < 3:
         layer_sizes = tuple(sorted((*layer_sizes, int(rng.integers(32, 129)))))
-    if rng.random() < 0.05 and len(layer_sizes) > 1:
+    elif r < 0.10 and len(layer_sizes) > 1:
         layer_sizes = layer_sizes[:-1]
+    elif r < 0.20:
+        n = rng.normal(0, 1)
+        layer_sizes = tuple(_clamp(int(s * (1.0 + 0.1 * n)), 32, 128) for s in g.layer_sizes)
     return Genome(
         layer_sizes=layer_sizes,
         wta_k=int(_clamp(int(g.wta_k + round(rng.normal(0, 1))), 2, 12)),
@@ -344,14 +347,20 @@ def lamarckism_blend(parent_w: List[torch.Tensor], genome: Genome, rng,
 
 
 def reproduce(parents: List[Organism], rng: np.random.Generator,
-              cfg: Eco2Config, uid_counter: List[int]) -> List[Organism]:
-    """亲代能量已 >= repro_threshold 才被调用。每个亲代付代价，产 fecundity 个子代。"""
+              cfg: Eco2Config, uid_counter: List[int], in_size: int) -> List[Organism]:
+    """亲代能量已 >= repro_threshold 才被调用。每个亲代付代价，产 fecundity 个子代。
+
+    结构未变 → 拉马克继承（lamarckism_blend）；结构变异 → 权重重启（随机先天连接）。
+    """
     children: List[Organism] = []
     for p in parents:
         p.energy -= cfg.repro_cost
         for _ in range(p.genome.fecundity):
             g_child = mutate_genome(p.genome, rng)
-            w_child = lamarckism_blend(p.weights, p.genome, rng, cfg)
+            if g_child.layer_sizes == p.genome.layer_sizes:
+                w_child = lamarckism_blend(p.weights, p.genome, rng, cfg)
+            else:
+                w_child = init_weights(g_child, in_size, rng, scale=cfg.w_init_scale)
             children.append(Organism(
                 uid=uid_counter[0], genome=g_child, energy=cfg.e_birth, age=0,
                 alive=True, weights=w_child,

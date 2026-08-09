@@ -198,12 +198,14 @@ def test_reproduce_pays_cost_and_fecundity():
                mutation_rate=0.1)
     parent = Organism(uid=0, genome=g, energy=300.0,
                       weights=init_weights(g, 196, rng))
-    children = reproduce([parent], rng, cfg, [1])
+    children = reproduce([parent], rng, cfg, [1], in_size=196)
     assert parent.energy == 200.0          # 付了繁殖代价
     assert len(children) == 2              # fecundity=2
     for c in children:
         assert c.alive and c.age == 0 and c.energy == 80.0
         assert c.genome != g or c.genome == g  # 基因至少结构合法
-        assert len(c.weights) == len(parent.weights)
+        assert len(c.weights) == len(c.genome.layer_sizes) + 1
+        if c.genome.layer_sizes == g.layer_sizes:
+            assert c.weights[0].shape == (32, 196)
     # uid 递增
     assert [c.uid for c in children] == [1, 2]
