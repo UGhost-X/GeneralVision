@@ -84,11 +84,11 @@ Standalone script that batch-compresses images > 2MB in a hardcoded target direc
 
 ### 回合制规则（v3）
 
-一回合 = 喂 1 个随机数字给全部存活者 → 各自产出 → **产错按已存活回合数的概率死亡**（首回合 100% 即死，存活 1 回合 → 50%，每多存活一回合死亡概率 ×1.5、封顶 100%；存活 2 回合 → 75%）+ 未死但 `age > 存活回合数上限` **自然死亡**（计停止指标）→ 存活者**选型交配**（按年龄相似度，强度 s 可调）+ 存活加权交叉繁殖 → 密度依赖 + **承载力封顶**（繁殖 = 覆盖当回合死亡 + 密度加权净增长，种群向承载力 logistic 增长）→ 结算。**停止条件**：累计自然死亡/总死亡 ≥ 95%（随机权重下基本不可达）；某回合全员死亡则复用筛选出的初始奠基个体全灭重播。
+一回合 = 喂 1 个随机数字给全部存活者 → 各自产出 → **产错不立即死亡**，而是降低本回合繁殖成功概率；**连续 3 回合未繁殖成功则立即死亡** + 未死但 `age > 存活回合数上限` **自然死亡**（计停止指标）→ 存活者**选型交配**（年龄相似度高优先，且更倾向与自身数字偏好不同的个体配对）+ 存活加权交叉繁殖 → 密度依赖 + **承载力封顶**（繁殖目标使用 `N_REPRO × alpha` 计算，默认可超过 1000，但受 `REPRO_GROWTH_DIVISOR=30` 和承载力约束）→ 结算。**停止条件**：累计自然死亡/总死亡 ≥ 95%（随机权重下基本不可达）；某回合全员死亡则复用筛选出的初始奠基个体全灭重播。
 
 ### 关键常量（eco_engine.py 顶部）
 
-`T=40`（仿真步数）、`INPUT_SAMPLES_PER_STEP=12`（每步采样的像素数）、`HIDDEN_SIZE=100`、`LEAK=0.94`、`THETA_HIDDEN=12.0`、`SURVIVAL_ROUNDS=20`（自然寿命）、`N_REPRO=50`（繁殖倍数）、`ASSORT_STRENGTH=0.5`（选型强度默认）、`CAPACITY=10000`（承载力）、`INIT_POP=1000`（初始/重播种群）、`SELECT_PER_DIGIT=100`（每个数字筛出的初始个体数）、`FOUNDER_CANDIDATE_BATCH=1000`、`FOUNDER_ADD_BATCH=500`、`DENSITY_FLOOR=0.05`、`POP_GROWTH=0.10`（每回合净增长率，密度加权）；产错死亡概率 `wrong_death_prob(survived)`：存活 0 → 100%、存活 1 → 50%、每多存活一回合 ×1.5、封顶 99%结构突变概率 `P_GROW=0.40 / P_SPLIT=0.15 / P_MERGE=0.10 / P_PRUNE=0.10 / P_ADDRANDOM=0.03`，层数 1-4、每层 20-200、总隐藏 ≤400。
+`T=40`（仿真步数）、`INPUT_SAMPLES_PER_STEP=12`（每步采样的像素数）、`HIDDEN_SIZE=100`、`LEAK=0.94`、`THETA_HIDDEN=12.0`、`SURVIVAL_ROUNDS=20`（自然寿命）、`N_REPRO=50`（繁殖倍数）、`ASSORT_STRENGTH=0.5`（选型强度默认）、`CAPACITY=10000`（承载力）、`INIT_POP=1000`（初始/重播种群）、`SELECT_PER_DIGIT=100`（每个数字筛出的初始个体数）、`FOUNDER_CANDIDATE_BATCH=1000`、`FOUNDER_ADD_BATCH=500`、`REPRO_SUCCESS_BASE=0.9`、`REPRO_WRONG_PENALTY=0.4`、`NO_REPRO_DEATH_ROUNDS=3`、`REPRO_GROWTH_DIVISOR=30`、`DENSITY_FLOOR=0.05`、`POP_GROWTH=0.10`（每回合净增长率，密度加权）；产错不立即死亡，结构突变概率 `P_GROW=0.40 / P_SPLIT=0.15 / P_MERGE=0.10 / P_PRUNE=0.10 / P_ADDRANDOM=0.03`，层数 1-4、每层 20-200、总隐藏 ≤400。
 
 ### 最近更新（2026-08-09）
 
@@ -98,6 +98,7 @@ Standalone script that batch-compresses images > 2MB in a hardcoded target direc
 - `eco_game.html` 已实现培养皿动画、食物数字、参数滑块、手动喂食、统计曲线/直方图和点击个体解剖。
 - 性能优化：默认 1000 个体的 HTTP `/api/step` 约 0.56 秒；20 回合压测最差约 0.96 秒，已控制在 1 秒内。
 - 初始种群已改为 0-9 十个数字逐个筛选：每个数字筛出 100 个产出正确的随机候选，组成 1000 个体初始种群；奠基个体会被缓存，重置/全灭重播直接复用，不再重新随机开局。
+- 繁殖规则更新：产错不再立即死亡，改为降低配对繁殖成功概率；连续 3 回合未繁殖成功死亡；配对更倾向跨数字偏好；繁殖目标使用 N 与 alpha，默认种群可超过 1000 且仍保持单回合约 1 秒内。
 
 
 

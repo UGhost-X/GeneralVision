@@ -746,6 +746,8 @@
           <div class="cell"><span>年龄</span><strong id="inspectAge"></strong></div>
           <div class="cell"><span>出生回合</span><strong id="inspectBorn"></strong></div>
           <div class="cell"><span>上次数字</span><strong id="inspectDigit"></strong></div>
+          <div class="cell"><span>数字倾向</span><strong id="inspectPreference"></strong></div>
+          <div class="cell"><span>未繁殖回合</span><strong id="inspectFailed"></strong></div>
           <div class="cell"><span>上次产出</span><strong id="inspectPrediction"></strong></div>
           <div class="cell"><span>判断</span><strong id="inspectCorrect"></strong></div>
           <div class="cell"><span>权重数</span><strong id="inspectWeights"></strong></div>
@@ -757,6 +759,8 @@
       $("inspectAge").textContent = organism.age;
       $("inspectBorn").textContent = organism.born_round;
       $("inspectDigit").textContent = organism.last_digit >= 0 ? organism.last_digit : "-";
+      $("inspectPreference").textContent = organism.digit_preference >= 0 ? organism.digit_preference : "-";
+      $("inspectFailed").textContent = organism.failed_repro_rounds || 0;
       $("inspectPrediction").textContent = organism.prediction >= 0 ? organism.prediction : "-";
       $("inspectCorrect").textContent = organism.correct ? "正确" : "错误";
       $("inspectCorrect").style.color = organism.correct ? "#16845a" : "#c33a3a";

@@ -48,6 +48,10 @@ INIT_POP = 1000
 SELECT_PER_DIGIT = 100
 FOUNDER_CANDIDATE_BATCH = 1000
 FOUNDER_ADD_BATCH = 500
+REPRO_SUCCESS_BASE = 0.9
+REPRO_WRONG_PENALTY = 0.4
+NO_REPRO_DEATH_ROUNDS = 3
+REPRO_GROWTH_DIVISOR = 30.0
 DENSITY_FLOOR = 0.05
 POP_GROWTH = 0.10
 
@@ -766,14 +770,6 @@ def forward(
     return predictions, rates
 
 
-def wrong_death_prob(survived_rounds: int) -> float:
-    if survived_rounds <= 0:
-        return 1.0
-    if survived_rounds == 1:
-        return 0.5
-    return min(1.0, 0.5 * 1.5 ** (survived_rounds - 1))
-
-
 @dataclass
 class EcoConfig:
     survival_rounds: int = SURVIVAL_ROUNDS
@@ -838,6 +834,8 @@ class Organism:
     died_round: Optional[int] = None
     death_reason: str = ""
     last_digit: int = -1
+    digit_preference: int = -1
+    failed_repro_rounds: int = 0
 
     def to_dict(self, include_weights: bool = False) -> Dict[str, object]:
         data = {
@@ -850,6 +848,8 @@ class Organism:
             "died_round": self.died_round,
             "death_reason": self.death_reason,
             "last_digit": self.last_digit,
+            "digit_preference": self.digit_preference,
+            "failed_repro_rounds": self.failed_repro_rounds,
             "layer_sizes": list(self.genome.layer_sizes),
             "weights_size": int(self.genome.weights.size),
         }
@@ -928,6 +928,7 @@ class Ecosystem:
                 correct=True,
                 prediction=digit,
                 last_digit=digit,
+                digit_preference=digit,
             )
             self._next_uid += 1
             self.population.append(organism)
@@ -1044,7 +1045,13 @@ class Ecosystem:
             scores = []
             for second in remaining:
                 age_sim = 1.0 - abs(first.age - second.age) / max_age
-                score = (1.0 - strength) * rng.random() + strength * age_sim
+                digit_bonus = (
+                    0.0
+                    if first.digit_preference == second.digit_preference
+                    else 1.0
+                )
+                mate_score = 0.5 * age_sim + 0.5 * digit_bonus
+                score = (1.0 - strength) * rng.random() + strength * mate_score
                 scores.append(max(score, 1e-6))
             scores = np.asarray(scores, dtype=np.float64)
             probs = scores / scores.sum()
@@ -1055,6 +1062,14 @@ class Ecosystem:
         if len(remaining) == 1 and not pairs:
             pairs.append((remaining[0], remaining[0]))
         return pairs
+
+    def _pair_repro_success(self, first: Organism, second: Organism) -> float:
+        probability = REPRO_SUCCESS_BASE
+        if not first.correct:
+            probability *= REPRO_WRONG_PENALTY
+        if not second.correct:
+            probability *= REPRO_WRONG_PENALTY
+        return probability
 
     def _offspring_counts(
         self,
@@ -1128,6 +1143,7 @@ class Ecosystem:
             "alive_before": len(alive_before),
             "wrong_deaths": 0,
             "natural_deaths": 0,
+            "no_repro_deaths": 0,
             "deaths": [],
             "births": [],
             "replay": False,
@@ -1154,20 +1170,11 @@ class Ecosystem:
             organism.correct = bool(predictions[idx] == label)
             organism.prediction = int(predictions[idx])
             organism.last_digit = label
-            if not organism.correct:
-                if self.rng.random() < wrong_death_prob(organism.age):
-                    self._kill(organism, "wrong")
-            if organism.alive:
-                organism.age += 1
-                if organism.age >= self.config.survival_rounds:
-                    self._kill(organism, "natural")
+            organism.age += 1
+            if organism.age >= self.config.survival_rounds:
+                self._kill(organism, "natural")
 
         survivors = [o for o in alive_before if o.alive]
-        wrong_deaths = [
-            o
-            for o in alive_before
-            if not o.alive and o.death_reason == "wrong"
-        ]
         natural_deaths = [
             o
             for o in alive_before
@@ -1186,26 +1193,47 @@ class Ecosystem:
         age_factor = 1.0 + mean_age / max(1, self.config.survival_rounds)
         growth = int(
             len(survivors)
+            * self.config.n_repro
             * self.config.pop_growth
             * alpha
             * age_factor
             * density_factor
+            / REPRO_GROWTH_DIVISOR
         )
         needed = max(len(alive_before) - len(survivors), growth)
         target_pop = min(self.config.capacity, len(survivors) + needed)
 
         offspring = 0
+        no_repro_deaths: List[Organism] = []
         if survivors and target_pop > len(survivors):
             pairs = self._assortative_pairs(
                 survivors, self.config.assort_strength, self.rng
             )
+            paired_ids = {organism.uid for pair in pairs for organism in pair}
+            active_pairs = []
+            for first, second in pairs:
+                if self.rng.random() < self._pair_repro_success(first, second):
+                    active_pairs.append((first, second))
+                else:
+                    first.failed_repro_rounds += 1
+                    if first is not second:
+                        second.failed_repro_rounds += 1
+
             counts = self._offspring_counts(
-                pairs,
+                active_pairs,
                 target_pop - len(survivors),
                 alpha,
                 density_factor,
             )
-            for (first, second), count in zip(pairs, counts):
+            for (first, second), count in zip(active_pairs, counts):
+                if count > 0:
+                    first.failed_repro_rounds = 0
+                    if first is not second:
+                        second.failed_repro_rounds = 0
+                else:
+                    first.failed_repro_rounds += 1
+                    if first is not second:
+                        second.failed_repro_rounds += 1
                 for _ in range(count):
                     child = Organism(
                         uid=self._next_uid,
@@ -1217,13 +1245,31 @@ class Ecosystem:
                             self.rng,
                         ),
                         born_round=self.round,
+                        digit_preference=(
+                            first.digit_preference
+                            if self.rng.random() < 0.5
+                            else second.digit_preference
+                        ),
                     )
                     self._next_uid += 1
                     self.population.append(child)
                     events["births"].append({"id": child.uid})  # type: ignore[attr-defined]
                     offspring += 1
 
-        self.cumulative_total_deaths += len(wrong_deaths) + len(natural_deaths)
+            for organism in survivors:
+                if organism.uid not in paired_ids:
+                    organism.failed_repro_rounds += 1
+
+        for organism in survivors:
+            if organism.failed_repro_rounds >= NO_REPRO_DEATH_ROUNDS:
+                self._kill(organism, "no_repro")
+                no_repro_deaths.append(organism)
+
+        survivors_alive = [o for o in survivors if o.alive]
+
+        self.cumulative_total_deaths += len(natural_deaths) + len(
+            no_repro_deaths
+        )
         self.cumulative_natural_deaths += len(natural_deaths)
         if (
             self.cumulative_total_deaths > 0
@@ -1234,14 +1280,15 @@ class Ecosystem:
         events.update(
             {
                 "digit_label": label,
-                "alive_after": len(survivors),
-                "population_after": len(survivors) + offspring,
+                "alive_after": len(survivors_alive),
+                "population_after": len(survivors_alive) + offspring,
                 "survivors_before": len(alive_before),
                 "survival_rate": survival_rate,
                 "alpha": alpha,
                 "density_factor": density_factor,
-                "wrong_deaths": len(wrong_deaths),
+                "wrong_deaths": 0,
                 "natural_deaths": len(natural_deaths),
+                "no_repro_deaths": len(no_repro_deaths),
                 "offspring": offspring,
                 "accuracy": sum(1 for o in alive_before if o.correct)
                 / max(1, len(alive_before)),
@@ -1254,8 +1301,9 @@ class Ecosystem:
                         "correct": o.correct,
                         "prediction": o.prediction,
                         "layer_sizes": list(o.genome.layer_sizes),
+                        "digit_preference": o.digit_preference,
                     }
-                    for o in wrong_deaths + natural_deaths
+                    for o in natural_deaths + no_repro_deaths
                 ],
                 "survivors": [
                     {
@@ -1265,8 +1313,10 @@ class Ecosystem:
                         "prediction": o.prediction,
                         "layer_sizes": list(o.genome.layer_sizes),
                         "born_round": o.born_round,
+                        "digit_preference": o.digit_preference,
+                        "failed_repro_rounds": o.failed_repro_rounds,
                     }
-                    for o in survivors
+                    for o in survivors_alive
                 ],
                 "stopped": self.stopped,
             }
@@ -1330,6 +1380,7 @@ def main() -> None:
                     f"round={events['round']} digit={events['digit_label']} "
                     f"alive={events['population_after']} "
                     f"wrong={events['wrong_deaths']} natural={events['natural_deaths']} "
+                    f"no_repro={events.get('no_repro_deaths', 0)} "
                     f"accuracy={events['accuracy']:.3f}"
                 )
             else:
