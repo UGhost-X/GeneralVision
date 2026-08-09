@@ -367,3 +367,52 @@ def reproduce(parents: List[Organism], rng: np.random.Generator,
             ))
             uid_counter[0] += 1
     return children
+
+
+# --------------------------------------------------------------------------- #
+# 场景事件（干预）（Task 5）
+# --------------------------------------------------------------------------- #
+@dataclass
+class Event:
+    round: int
+    kind: str
+    params: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {"round": self.round, "kind": self.kind, "params": self.params}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Event":
+        return cls(round=d["round"], kind=d["kind"], params=dict(d.get("params", {})))
+
+
+def pick_food(rng: np.random.Generator, dist: np.ndarray) -> int:
+    return int(rng.choice(10, p=dist / dist.sum()))
+
+
+def apply_events(round_: int, events: List[Event], dist: np.ndarray,
+                 population: List[Organism], rng: np.random.Generator,
+                 cfg: Eco2Config, uid_counter: List[int], in_size: int) -> np.ndarray:
+    """按回合触发干预。返回新的食物分布。副作用就地作用于 population。"""
+    for ev in events:
+        if ev.round != round_:
+            continue
+        if ev.kind == "drift":
+            dist = np.asarray(ev.params["dist"], np.float64)
+            dist = dist / dist.sum()
+        elif ev.kind == "toxin":
+            digit, damage = ev.params["digit"], ev.params["damage"]
+            for o in population:
+                if o.alive and o.digit_counts.argmax() == digit:
+                    o.energy -= damage
+        elif ev.kind == "forced_breed":
+            count = int(ev.params.get("count", 1))
+            eligible = [o for o in population if o.alive]
+            eligible.sort(key=lambda o: o.energy, reverse=True)
+            parents = eligible[:count]
+            population.extend(reproduce(parents, rng, cfg, uid_counter, in_size))
+        elif ev.kind == "selective_breed":
+            # 从该回合起每回合额外繁殖：由 EcoEngine2 读取 cfg 里的该事件窗口处理
+            # （见 Task 6；此处预留，不在这里处理）
+            pass
+    return dist

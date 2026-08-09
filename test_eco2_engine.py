@@ -209,3 +209,58 @@ def test_reproduce_pays_cost_and_fecundity():
             assert c.weights[0].shape == (32, 196)
     # uid 递增
     assert [c.uid for c in children] == [1, 2]
+
+
+# --------------------------------------------------------------------------- #
+# Task 5: 场景事件（干预）
+# --------------------------------------------------------------------------- #
+import numpy as np
+from eco2_engine import (Event, apply_events, pick_food, random_genome, init_weights,
+                         Organism, Eco2Config)
+
+def test_pick_food_respects_dist():
+    rng = np.random.default_rng(0)
+    dist = np.zeros(10); dist[3] = 1.0
+    picks = [pick_food(rng, dist) for _ in range(50)]
+    assert all(p == 3 for p in picks)
+
+def test_drift_changes_dist():
+    events = [Event(round=10, kind="drift", params={"dist": [1.0 if d == 7 else 0.0 for d in range(10)]})]
+    dist = np.full(10, 0.1)
+    rng = np.random.default_rng(0)
+    new_dist = apply_events(10, events, dist, [], rng, Eco2Config(), [0], 196)
+    assert new_dist.argmax() == 7 and abs(new_dist.sum() - 1.0) < 1e-6
+
+def test_toxin_damages_target_pref():
+    rng = np.random.default_rng(0)
+    g = random_genome(rng)
+    org = Organism(uid=0, genome=g, energy=100.0, weights=init_weights(g, 196, rng))
+    org.digit_counts[5] = 10  # 偏好 5
+    events = [Event(round=1, kind="toxin", params={"digit": 5, "damage": 30.0})]
+    dist = np.full(10, 0.1)
+    apply_events(1, events, dist, [org], rng, Eco2Config(), [0], 196)
+    assert org.energy == 70.0
+    org2 = Organism(uid=1, genome=g, energy=100.0, weights=init_weights(g, 196, rng))
+    org2.digit_counts[9] = 10  # 偏好 9
+    apply_events(1, events, dist, [org2], rng, Eco2Config(), [0], 196)
+    assert org2.energy == 100.0  # 未受影响
+
+def test_event_round_gating():
+    dist = np.full(10, 0.1)
+    events = [Event(round=10, kind="drift", params={"dist": [0.0]*10})]
+    rng = np.random.default_rng(0)
+    new_dist = apply_events(9, events, dist, [], rng, Eco2Config(), [0], 196)
+    assert abs(new_dist.sum() - 1.0) < 1e-6  # 未触发（round 不匹配）
+
+def test_forced_breed_produces_offspring():
+    rng = np.random.default_rng(0)
+    g = random_genome(rng)
+    # 能量低于阈值（20 < 200），强制繁殖仍应产出
+    org = Organism(uid=0, genome=g, energy=20.0, weights=init_weights(g, 196, rng))
+    events = [Event(round=1, kind="forced_breed", params={"count": 1})]
+    dist = np.full(10, 0.1)
+    pop = [org]
+    cfg = Eco2Config(repro_threshold=200.0)
+    apply_events(1, events, dist, pop, rng, cfg, [1], 196)
+    assert len(pop) == 2  # 强制繁殖加入一个子代
+    assert pop[1].alive
