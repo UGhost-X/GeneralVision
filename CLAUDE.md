@@ -90,6 +90,14 @@ Standalone script that batch-compresses images > 2MB in a hardcoded target direc
 
 `T=40`（仿真步数）、`HIDDEN_SIZE=100`、`LEAK=0.94`、`THETA_HIDDEN=12.0`、`SURVIVAL_ROUNDS=20`（自然寿命）、`N_REPRO=50`（繁殖倍数）、`ASSORT_STRENGTH=0.5`（选型强度默认）、`CAPACITY=10000`（承载力）、`INIT_POP=1000`（初始/重播种群）、`DENSITY_FLOOR=0.05`、`POP_GROWTH=0.10`（每回合净增长率，密度加权）；产错死亡概率 `wrong_death_prob(survived)`：存活 0 → 100%、存活 1 → 50%、每多存活一回合 ×1.5、封顶 99%结构突变概率 `P_GROW=0.40 / P_SPLIT=0.15 / P_MERGE=0.10 / P_PRUNE=0.10 / P_ADDRANDOM=0.03`，层数 1-4、每层 20-200、总隐藏 ≤400。
 
+### 最近更新（2026-08-09）
+
+- 已从零重建 LIF 生态游戏三件套：`eco_engine.py`、`eco_server.py`、`eco_game.html`，未从历史改动中复用代码。
+- `eco_engine.py` 已实现 Genome/随机权重、存活加权交叉、五类结构突变、numba 稀疏 LIF 前向、v3 回合生态主循环。
+- `eco_server.py` 已实现本地 `http.server` 与 `/api/state`、`/api/step`、`/api/digit_image`、`/api/manual_feed`、`/api/config`、`/api/reset`。
+- `eco_game.html` 已实现培养皿动画、食物数字、参数滑块、手动喂食、统计曲线/直方图和点击个体解剖。
+- 性能基线：默认 1000 个体单回合约 5.3 秒，下一步目标是优化到 1 秒内。
+
 
 
 ## 其他
