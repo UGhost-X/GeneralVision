@@ -1113,6 +1113,75 @@ def forward(
     return predictions, rates
 
 
+def forward_learn(
+    genomes: Sequence[Genome],
+    spikes: Tuple[np.ndarray, np.ndarray],
+) -> Tuple[np.ndarray, np.ndarray, List[np.ndarray]]:
+    """同 forward，但额外返回每个个体的最后一层隐藏率（供读出层学习）。
+
+    Returns:
+        (predictions, rates, hidden_rates)：hidden_rates[i] 形状为
+        (genomes[i].layer_sizes[-1],)，与输入顺序对齐。
+    """
+    spike_idx, spike_vals = spikes
+    if not genomes:
+        return (
+            np.empty((0,), dtype=np.int32),
+            np.empty((0, 10), dtype=np.float32),
+            [],
+        )
+
+    groups: Dict[Tuple[int, ...], List[int]] = {}
+    for idx, genome in enumerate(genomes):
+        groups.setdefault(tuple(genome.layer_sizes), []).append(idx)
+
+    predictions = np.empty(len(genomes), dtype=np.int32)
+    rates = np.empty((len(genomes), 10), dtype=np.float32)
+    hidden_rates: List[Optional[np.ndarray]] = [None] * len(genomes)
+    for layer_sizes, indices in groups.items():
+        selected = [genomes[i] for i in indices]
+        if len(selected) >= 8:
+            (
+                mats,
+                biases,
+                out_mat,
+                out_bias,
+                wta_ks,
+                leaks,
+                input_gains,
+                threshold_scales,
+            ) = _stack_genome_group(selected, layer_sizes)
+            logits, hidden_rates_group = _forward_group_vectorized(
+                mats,
+                biases,
+                out_mat,
+                out_bias,
+                wta_ks,
+                leaks,
+                input_gains,
+                threshold_scales,
+                spike_idx,
+                spike_vals,
+            )
+            predictions[indices] = logits.argmax(axis=1).astype(np.int32)
+            rates[indices] = _softmax(logits)
+            for j, idx in enumerate(indices):
+                hidden_rates[idx] = hidden_rates_group[j]
+        else:
+            logits, hidden_counts = _forward_numba_batch(
+                selected, spike_idx, spike_vals
+            )
+            predictions[indices] = logits.argmax(axis=1).astype(np.int32)
+            rates[indices] = _softmax(logits)
+            n_steps = spike_idx.shape[0]
+            last_n = layer_sizes[-1]
+            for j, idx in enumerate(indices):
+                hidden_rates[idx] = (
+                    hidden_counts[j, :last_n] / float(n_steps)
+                )
+    return predictions, rates, [h for h in hidden_rates if h is not None]
+
+
 def extract_hidden_features(
     genomes: Sequence[Genome],
     spikes: Tuple[np.ndarray, np.ndarray],
@@ -1284,6 +1353,40 @@ class Organism:
         if include_weights:
             data["weights"] = self.genome.weights.tolist()
         return data
+
+
+def _phenotype_genomes(organisms: Sequence[Organism]) -> List[Genome]:
+    """构造指向表型(学习后权重)的轻量 Genome shim，供 forward/体检使用。
+
+    shim 复用基因型的结构与性状字段，仅把 .weights 指向 learned_weights；
+    不拷贝权重数组，写回即修改个体表型。
+    """
+    result: List[Genome] = []
+    for organism in organisms:
+        g = organism.genome
+        weights = (
+            organism.learned_weights
+            if organism.learned_weights is not None
+            else g.weights
+        )
+        result.append(
+            Genome(
+                tuple(g.layer_sizes),
+                weights,
+                g.longevity_bonus,
+                g.fecundity,
+                g.wrong_tolerance,
+                g.mutation_rate,
+                g.wta_k,
+                g.leak,
+                g.input_gain,
+                g.threshold_scale,
+                g.readout_lr,
+                g.hidden_plasticity,
+                g.plasticity_drift,
+            )
+        )
+    return result
 
 
 class Ecosystem:
@@ -1471,7 +1574,7 @@ class Ecosystem:
             ]
             for digit in range(10)
         }
-        genomes = [organism.genome for organism in alive]
+        genomes = _phenotype_genomes(alive)
         accuracy = self._score_digits(genomes, spikes_cache)
         confidence = self._confidence_digits(genomes, spikes_cache)
         accuracy_fitness = self._fitness_from_accuracy(accuracy)
@@ -1497,16 +1600,16 @@ class Ecosystem:
         for i, organism in enumerate(top_organisms[:CENSUS_ELITE]):
             organism.elite_rounds = CENSUS_ELITE_ROUNDS
         self._fit_readouts(
-            [organism.genome for organism in top_organisms],
+            _phenotype_genomes(top_organisms),
             samples_per_digit=CENSUS_READOUT_SAMPLES_PER_DIGIT,
             weak_digits=weak_digits,
         )
         top_accuracy = self._score_digits(
-            [organism.genome for organism in top_organisms],
+            _phenotype_genomes(top_organisms),
             spikes_cache,
         )
         top_confidence = self._confidence_digits(
-            [organism.genome for organism in top_organisms],
+            _phenotype_genomes(top_organisms),
             spikes_cache,
         )
         top_accuracy_fitness = self._fitness_from_accuracy(top_accuracy)
@@ -1918,7 +2021,9 @@ class Ecosystem:
             return events
 
         spikes = _sample_spikes(np.asarray(self.current_food["image"], np.float32), self.rng)
-        predictions, _ = forward([o.genome for o in alive_before], spikes)
+        predictions, rates, hidden_rates = forward_learn(
+            _phenotype_genomes(alive_before), spikes
+        )
 
         for idx, organism in enumerate(alive_before):
             organism.correct = bool(predictions[idx] == label)

@@ -3,7 +3,16 @@
 import numpy as np
 import pytest
 
-from eco_engine import EcoConfig, Ecosystem, crossover, random_genome
+from eco_engine import (
+    EcoConfig,
+    Ecosystem,
+    crossover,
+    forward,
+    forward_learn,
+    random_genome,
+    _phenotype_genomes,
+    _sample_spikes,
+)
 
 
 @pytest.fixture(scope="module")
@@ -50,3 +59,31 @@ def test_organism_has_learned_weights(eco):
     d = o.to_dict()
     assert "readout_lr" in d and "learning_amount" in d
     assert d["learning_amount"] == 0.0
+
+
+def test_forward_learn_shapes(eco):
+    eco.reset()
+    alive = [o for o in eco.population if o.alive][:10]
+    spikes = _sample_spikes(
+        np.asarray(eco._test_images[0], np.float32), eco.rng
+    )
+    shims = _phenotype_genomes(alive)
+    preds, rates, hidden_rates = forward_learn(shims, spikes)
+    assert len(preds) == len(alive)
+    assert rates.shape == (len(alive), 10)
+    for i, o in enumerate(alive):
+        assert hidden_rates[i].shape == (o.genome.layer_sizes[-1],)
+
+
+def test_shims_match_genotype_when_unlearned(eco):
+    eco.reset()
+    alive = [o for o in eco.population if o.alive][:10]
+    spikes = _sample_spikes(
+        np.asarray(eco._test_images[0], np.float32), eco.rng
+    )
+    genomes = [o.genome for o in alive]
+    shims = _phenotype_genomes(alive)
+    p1, r1 = forward(genomes, spikes)
+    p2, r2, _ = forward_learn(shims, spikes)
+    assert np.array_equal(p1, p2)
+    assert np.allclose(r1, r2)
