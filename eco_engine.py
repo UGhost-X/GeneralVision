@@ -73,14 +73,14 @@ P_READOUT_MUTATION = 0.30
 P_READOUT_SPARSE_RESET = 0.05
 TRAIT_MUTATION_RATE = 0.25
 REPRO_SUCCESS_BASE = 0.9
-REPRO_WRONG_PENALTY = 0.4
+REPRO_WRONG_PENALTY = 0.5
 NO_REPRO_DEATH_ROUNDS = 3
 REPRO_GROWTH_DIVISOR = 30.0
 DENSITY_FLOOR = 0.05
 POP_GROWTH = 0.10
 
 # 在线学习（P1）
-READOUT_LR_SCALE = 0.05          # 读出层 delta 学习实际步长 = readout_lr * 此值
+READOUT_LR_SCALE = 0.02          # 读出层 delta 学习实际步长 = readout_lr * 此值
 MATURITY_SAMPLES = 6             # 出生成熟期训练样本数
 READOUT_LR_MIN, READOUT_LR_MAX = 0.0, 1.0
 HIDDEN_PLASTICITY_MIN, HIDDEN_PLASTICITY_MAX = 0.0, 1.0
@@ -666,6 +666,24 @@ def _mutate_genome(genome: Genome, rng: np.random.Generator) -> Genome:
     )
 
 
+def _readout_source(
+    fitness_a: float,
+    fitness_b: float,
+    weights_a: np.ndarray,
+    weights_b: np.ndarray,
+    learned_a: Optional[np.ndarray],
+    learned_b: Optional[np.ndarray],
+) -> np.ndarray:
+    """跨代遗传的读出层源：高 fitness 亲本的已学(表型)权重，缺省回退基因型。
+
+    让"学到的读出层技能"随遗传传给后代（soft-Lamarckian，仅限读出层），
+    隐藏层仍保持韦斯曼式先天遗传。
+    """
+    if fitness_a >= fitness_b:
+        return learned_a if learned_a is not None else weights_a
+    return learned_b if learned_b is not None else weights_b
+
+
 def crossover(
     parent_a: Genome,
     parent_b: Genome,
@@ -674,6 +692,8 @@ def crossover(
     rng: Optional[np.random.Generator] = None,
     fitness_a: float = 0.0,
     fitness_b: float = 0.0,
+    learned_a: Optional[np.ndarray] = None,
+    learned_b: Optional[np.ndarray] = None,
 ) -> Genome:
     if rng is None:
         rng = np.random.default_rng()
@@ -690,12 +710,16 @@ def crossover(
     layer_sizes = list(donor.layer_sizes)
     flat = donor.weights.copy()
     if tuple(layer_sizes) == other.layer_sizes:
-        readout_donor = (
-            parent_a if fitness_a >= fitness_b else parent_b
-        )
         if rng.random() < 0.8:
             readout_offset = _output_offset(layer_sizes)
-            flat[readout_offset:] = readout_donor.weights[readout_offset:]
+            flat[readout_offset:] = _readout_source(
+                fitness_a,
+                fitness_b,
+                parent_a.weights,
+                parent_b.weights,
+                learned_a,
+                learned_b,
+            )[readout_offset:]
         else:
             start = int(rng.integers(0, 2))
             flat[start::2] = other.weights[start::2]
@@ -1953,12 +1977,11 @@ class Ecosystem:
         mean_fitness = 0.5 * (first.fitness + second.fitness)
         fitness_factor = 0.75 + 0.25 * min(1.0, max(0.0, mean_fitness))
         probability = REPRO_SUCCESS_BASE * fitness_factor
-        if not first.correct:
-            tolerance = max(0.1, first.genome.wrong_tolerance)
-            probability *= REPRO_WRONG_PENALTY ** (1.0 / tolerance)
-        if not second.correct:
-            tolerance = max(0.1, second.genome.wrong_tolerance)
-            probability *= REPRO_WRONG_PENALTY ** (1.0 / tolerance)
+        # 产错惩罚基于平滑准确率 acc_ema，而非单次喂食对错（消除单数字噪声误杀）
+        for organism in (first, second):
+            tolerance = max(0.1, organism.genome.wrong_tolerance)
+            ema = max(0.0, min(1.0, organism.acc_ema))
+            probability *= REPRO_WRONG_PENALTY ** ((1.0 - ema) / tolerance)
         return probability
 
     def _offspring_counts(
@@ -2176,6 +2199,8 @@ class Ecosystem:
                         self.rng,
                         first.fitness,
                         second.fitness,
+                        first.learned_weights,
+                        second.learned_weights,
                     )
                     child = Organism(
                         uid=self._next_uid,
