@@ -167,10 +167,14 @@ def test_server_endpoints():
         s = json.load(urllib.request.urlopen(base + "/api/state"))
         assert s["config"]["survival_rounds"] == eco.SURVIVAL_ROUNDS
         assert len(s["population"]) == eco.INIT_POP
+        assert "assort_strength" in s["config"]
+        assert isinstance(s.get("history"), list)
+        assert all("arch" in p for p in s["population"])
         req = urllib.request.Request(base + "/api/step", method="POST")
         r = json.load(urllib.request.urlopen(req))
         assert r["stats"]["natural_rate"] >= 0.0
         assert r["events"][0]["type"] == "round_begin"
+        assert "age_hist" in r["stats"] and "newborns" in r["stats"]
         img = json.load(urllib.request.urlopen(base + "/api/digit_image/0"))
         assert len(img["pixels"]) == 784
         # 回合制下大部分个体当回合死亡，喂食目标须取推演后的存活者
@@ -247,6 +251,31 @@ def test_config_assort_strength():
     assert abs(e.assort_strength - 0.8) < 1e-9   # 非法值忽略
     e.set_config(assort_strength=1.5)
     assert abs(e.assort_strength - 0.8) < 1e-9
+
+
+def test_history_and_age_hist():
+    """/api/state 含 history；stats 含 age_hist/newborns/avg_acc；population 每项带 arch。"""
+    e = eco.Ecosystem(seed=0)
+    for _ in range(3):
+        e.step_round()
+    st = e.get_state()
+    assert "history" in st and len(st["history"]) == 3
+    assert set(st["history"][-1]) >= {"round", "alive", "avg_acc", "natural_rate", "survival_rate", "alpha"}
+    s = st["stats"]
+    assert "age_hist" in s and len(s["age_hist"]) == e.survival_rounds
+    assert "newborns" in s and "avg_acc" in s
+    # 直方图（age≥1）+ 新生（age=0）应覆盖全部存活
+    assert sum(s["age_hist"]) + s["newborns"] == len(e.pop), "直方图+新生应覆盖全部存活"
+    for p in st["population"]:
+        assert isinstance(p["arch"], list) and all(isinstance(n, int) for n in p["arch"])
+
+
+def test_birth_event_has_arch():
+    """birth 事件携带新个体架构（前端需立即画出）。"""
+    e = eco.Ecosystem(seed=5)
+    events, _ = e.step_round()
+    births = [ev for ev in events if ev["type"] == "birth"]
+    assert births and all("arch" in b for b in births)
 
 
 def _forward_numpy_reference_multi(genome, pixels, rng):

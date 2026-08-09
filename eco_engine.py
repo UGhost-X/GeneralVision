@@ -445,6 +445,8 @@ class Ecosystem:
         # 上一回合观测（前端 /api/state 展示）
         self.last_survival_rate = 0.0
         self.last_alpha = 1.0
+        self.last_avg_acc = 0.0
+        self.history: list[dict] = []          # 每回合统计历史（前端曲线预填充）
         # 停止条件计数
         self.natural_deaths = 0
         self.total_deaths = 0
@@ -466,13 +468,6 @@ class Ecosystem:
             self.capacity = int(kw["capacity"])
         if "initial_pop" in kw and 60 <= kw["initial_pop"] <= 1000:
             self.initial_pop = int(kw["initial_pop"])
-            # v3：无强制回填下种群 ≈ 初始种群规模，改动直接增补/截断当前种群
-            cur = len(self.pop)
-            if cur < self.initial_pop:
-                for _ in range(self.initial_pop - cur):
-                    self.pop.append(random_genome(self._next_name(), self.rng, gen=self.round))
-            elif cur > self.initial_pop:
-                self.pop = self.pop[: self.initial_pop]
             # v3：无强制回填下种群 ≈ 初始种群规模，改动直接增补/截断当前种群
             cur = len(self.pop)
             if cur < self.initial_pop:
@@ -544,6 +539,7 @@ class Ecosystem:
         alpha = survival_alpha(len(survivors), start_pop)
         self.last_survival_rate = (len(survivors) / start_pop) if start_pop > 0 else 0.0
         self.last_alpha = alpha
+        self.last_avg_acc = avg_correct
 
         # ---- 选型交配繁殖（随机两两 + 存活加权交叉 + 密度）----
         pairs = assortative_pairs(survivors, self.assort_strength, self.rng)
@@ -567,7 +563,8 @@ class Ecosystem:
         self.pop = survivors
         for c in births:
             events.append({"type": "birth", "name": c.name,
-                           "parents": [c.parents[0], c.parents[1]], "gen": c.born_gen})
+                           "parents": [c.parents[0], c.parents[1]], "gen": c.born_gen,
+                           "arch": c.arch()})
 
         # ---- 全灭重播 ----
         if not self.pop:
@@ -580,30 +577,52 @@ class Ecosystem:
         # ---- 停止条件：累计自然死亡 / 累计总死亡 ≥ 95% ----
         natural_rate = (self.natural_deaths / self.total_deaths) if self.total_deaths > 0 else 0.0
         self.stopped = self.stopped or (natural_rate >= 0.95)
+        age_hist, newborns = self._age_snapshot()
         stats = {"round": self.round, "alive": len(self.pop),
                  "avg_acc": round(avg_correct, 4),
                  "survival_rate": round(self.last_survival_rate, 4),
                  "alpha": round(self.last_alpha, 3),
+                 "age_hist": age_hist, "newborns": newborns,
                  "natural_deaths": self.natural_deaths,
                  "total_deaths": self.total_deaths,
                  "natural_rate": round(natural_rate, 4),
                  "stopped": self.stopped}
+        self.history.append({"round": self.round, "alive": len(self.pop),
+                             "avg_acc": round(avg_correct, 4),
+                             "natural_rate": round(natural_rate, 4),
+                             "survival_rate": round(self.last_survival_rate, 4),
+                             "alpha": round(self.last_alpha, 3)})
         events.append({"type": "round_end", "stats": stats})
         self.round += 1
         return events, stats
 
+    def _age_snapshot(self) -> tuple[list[int], int]:
+        """当前存活种群按年龄分箱：age_hist[i] = 存活 i+1 回合的个体数；newborns = 年龄 0 的新生数。"""
+        age_hist = [0] * self.survival_rounds
+        newborns = 0
+        for g in self.pop:
+            if 1 <= g.age <= self.survival_rounds:
+                age_hist[g.age - 1] += 1
+            elif g.age == 0:
+                newborns += 1
+        return age_hist, newborns
+
     def get_state(self) -> dict:
         return {"round": self.round, "config": self._config(),
+                "history": self.history,
                 "population": [{"name": g.name, "age": g.age, "born_gen": g.born_gen,
                                 "parents": list(g.parents) if g.parents else None,
-                                "alive": True} for g in self.pop],
+                                "arch": g.arch(), "alive": True} for g in self.pop],
                 "stats": self._last_stats()}
 
     def _last_stats(self) -> dict:
         natural_rate = (self.natural_deaths / self.total_deaths) if self.total_deaths > 0 else 0.0
+        age_hist, newborns = self._age_snapshot()
         return {"round": self.round, "alive": len(self.pop),
+                "avg_acc": self.last_avg_acc,
                 "survival_rate": self.last_survival_rate,
                 "alpha": self.last_alpha,
+                "age_hist": age_hist, "newborns": newborns,
                 "natural_deaths": self.natural_deaths,
                 "total_deaths": self.total_deaths,
                 "natural_rate": round(natural_rate, 4),
