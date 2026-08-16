@@ -3,6 +3,7 @@
 torch>=2.6.0
 torchvision>=0.21.0
 numpy>=1.26
+opencv-python-headless>=4.10
 numba>=0.66          # eco_engine forward 的 LIF 热循环 JIT 加速（v2 优化引入）
 matplotlib>=3.9        # 仅 viz.py 绘图需要
 

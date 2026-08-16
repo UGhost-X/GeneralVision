@@ -1,0 +1,1296 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>孔位拟合调试台</title>
+  <style>
+    :root {
+      --bg: #eef2f5;
+      --panel: #ffffff;
+      --line: #d5dde4;
+      --ink: #1d2733;
+      --muted: #5f6f7d;
+      --green: #16845a;
+      --red: #c33a3a;
+      --amber: #c47a09;
+      --blue: #2563eb;
+      --soft: #e9eef2;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      line-height: 1.4;
+    }
+    .app {
+      width: min(1500px, 100%);
+      margin: 0 auto;
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .header h1 {
+      font-size: 18px;
+      margin: 0 auto 0 0;
+      letter-spacing: 0;
+    }
+    .header .hint {
+      color: var(--muted);
+      font-size: 12px;
+      max-width: 560px;
+    }
+    .main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 390px;
+      gap: 12px;
+      align-items: start;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .panel h2 {
+      font-size: 13px;
+      margin: 0 0 10px;
+      font-weight: 700;
+    }
+    .image-panel {
+      display: grid;
+      gap: 10px;
+    }
+    .image-toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .image-box {
+      position: relative;
+      border: 1px solid var(--line);
+      background: #f8fafb;
+      border-radius: 8px;
+      overflow: hidden;
+      min-height: 420px;
+      max-height: 70vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .image-box img {
+      max-width: 100%;
+      max-height: 70vh;
+      object-fit: contain;
+      display: block;
+    }
+    .image-box img { cursor: zoom-in; }
+    .image-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 2000;
+      background: rgba(10, 14, 18, 0.88);
+      display: flex;
+      flex-direction: column;
+      color: #fff;
+    }
+    .image-modal[hidden] { display: none !important; }
+    .modal-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+      flex-wrap: wrap;
+    }
+    .modal-toolbar .button {
+      background: rgba(255, 255, 255, 0.12);
+      border-color: rgba(255, 255, 255, 0.2);
+      color: #fff;
+    }
+    .modal-toolbar .button:hover {
+      background: rgba(255, 255, 255, 0.22);
+      border-color: rgba(255, 255, 255, 0.35);
+    }
+    .modal-toolbar .zoom-info {
+      margin-left: auto;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.75);
+      min-width: 70px;
+      text-align: right;
+    }
+    .zoom-stage {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      background: #11161b;
+      touch-action: none;
+      user-select: none;
+      cursor: grab;
+    }
+    .zoom-stage.panning { cursor: grabbing; }
+    #zoomImg {
+      position: absolute;
+      left: 0;
+      top: 0;
+      transform-origin: 0 0;
+      max-width: none;
+      max-height: none;
+      user-select: none;
+      pointer-events: none;
+    }
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: #fbfcfd;
+      min-height: 62px;
+    }
+    .metric .label {
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .metric .value {
+      font-size: 18px;
+      font-weight: 700;
+      margin-top: 2px;
+    }
+    .metric .value.good { color: var(--green); }
+    .metric .value.bad { color: var(--red); }
+    .table-wrap {
+      max-height: 320px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    th, td {
+      text-align: right;
+      padding: 7px 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    th {
+      position: sticky;
+      top: 0;
+      background: #f3f6f8;
+      z-index: 1;
+      color: var(--muted);
+      font-weight: 650;
+    }
+    td:first-child, th:first-child { text-align: center; }
+    .shape-round { color: var(--green); font-weight: 650; }
+    .shape-elliptical { color: var(--red); font-weight: 650; }
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 10px;
+    }
+    .field {
+      display: grid;
+      gap: 3px;
+    }
+    .field.full { grid-column: 1 / -1; }
+    .field label {
+      color: var(--muted);
+      font-size: 11px;
+    }
+    input[type="number"], select, textarea {
+      width: 100%;
+      min-height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 8px;
+      font: inherit;
+      font-size: 13px;
+      color: var(--ink);
+      background: #fff;
+    }
+    textarea {
+      min-height: 100px;
+      font-family: Consolas, monospace;
+      resize: vertical;
+    }
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 32px;
+      font-size: 13px;
+    }
+    .button {
+      min-height: 34px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--ink);
+      cursor: pointer;
+      font: inherit;
+      font-size: 13px;
+    }
+    .button:hover { border-color: #aab7c1; }
+    .button.primary {
+      background: var(--green);
+      border-color: var(--green);
+      color: #fff;
+    }
+    .button.secondary { background: var(--blue); border-color: var(--blue); color: #fff; }
+    .button.warn { background: var(--amber); border-color: var(--amber); color: #fff; }
+    .row-list {
+      display: grid;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .row-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 9px;
+      font-size: 12px;
+      cursor: pointer;
+      background: #fbfcfd;
+    }
+    .row-item:hover { border-color: var(--blue); }
+    .row-item b { color: var(--blue); }
+    .badge {
+      display: inline-block;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 5px 8px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .error {
+      color: var(--red);
+      font-size: 12px;
+      min-height: 18px;
+    }
+    .toast-container {
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      display: grid;
+      gap: 8px;
+      z-index: 1000;
+      width: min(360px, calc(100vw - 28px));
+    }
+    .toast {
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--blue);
+      border-radius: 8px;
+      background: #ffffff;
+      color: var(--ink);
+      padding: 10px 12px;
+      font-size: 13px;
+      box-shadow: 0 8px 20px rgba(29, 39, 51, 0.14);
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      animation: toast-in 0.18s ease-out;
+    }
+    .toast.success { border-left-color: var(--green); }
+    .toast.error { border-left-color: var(--red); }
+    .toast.info { border-left-color: var(--blue); }
+    .toast.fade { opacity: 0; transform: translateY(-4px); transition: opacity 0.18s, transform 0.18s; }
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(-6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .help-panel {
+      margin-top: 12px;
+    }
+    .help-panel summary {
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 13px;
+      color: var(--ink);
+    }
+    .help-body {
+      margin-top: 10px;
+      overflow-x: auto;
+    }
+    .help-table {
+      width: 100%;
+      font-size: 12px;
+      white-space: normal;
+    }
+    .help-table th, .help-table td {
+      text-align: left;
+      vertical-align: top;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .help-table th {
+      background: #f3f6f8;
+      color: var(--muted);
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .help-table td:first-child {
+      white-space: nowrap;
+      font-weight: 650;
+    }
+    .help-tips {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .tip {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: #fbfcfd;
+      font-size: 12px;
+    }
+    .tip b { color: var(--blue); }
+    @media (max-width: 900px) {
+      .help-tips { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 1100px) {
+      .main { grid-template-columns: 1fr; }
+      .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="toast-container" id="toastContainer"></div>
+    <header class="header">
+      <h1>孔位拟合调试台</h1>
+      <span class="hint">调整检测参数、标注真值、查看漏检/误检，并用批量搜索找更合适的参数。</span>
+      <input id="fileInput" type="file" accept="image/*" hidden>
+      <button class="button" id="uploadBtn">上传图片</button>
+      <button class="button secondary" id="sample1Btn">加载 raw_image_1_ann1</button>
+      <button class="button secondary" id="sample2Btn">加载 multi-demo-2</button>
+      <button class="button" id="exportJsonBtn">导出 JSON</button>
+      <button class="button" id="exportCsvBtn">导出 CSV</button>
+      <button class="button" id="saveParamsBtn">保存参数</button>
+      <button class="button" id="resetParamsBtn">恢复默认</button>
+    </header>
+
+    <div class="main">
+      <section class="panel image-panel">
+        <div class="image-toolbar">
+          <button class="button primary" id="fitBtn">运行拟合</button>
+          <button class="button" id="toggleImgBtn">切换：标注图</button>
+          <span class="badge" id="imageInfo">未加载图片</span>
+          <span class="badge" id="elapsedInfo"></span>
+        </div>
+        <div class="image-box">
+          <img id="overlayImg" alt="拟合结果">
+        </div>
+        <div class="metrics-grid">
+          <div class="metric"><div class="label">检出数量</div><div class="value" id="metricCount">-</div></div>
+          <div class="metric"><div class="label">正确检出 TP</div><div class="value" id="metricTp">-</div></div>
+          <div class="metric"><div class="label">误检 FP</div><div class="value bad" id="metricFp">-</div></div>
+          <div class="metric"><div class="label">漏检 FN</div><div class="value bad" id="metricFn">-</div></div>
+          <div class="metric"><div class="label">Precision</div><div class="value" id="metricPrecision">-</div></div>
+          <div class="metric"><div class="label">Recall</div><div class="value" id="metricRecall">-</div></div>
+          <div class="metric"><div class="label">F1</div><div class="value" id="metricF1">-</div></div>
+          <div class="metric"><div class="label">中心误差 px</div><div class="value" id="metricError">-</div></div>
+        </div>
+        <div class="table-wrap">
+          <table id="resultTable">
+            <thead>
+              <tr>
+                <th>#</th><th>x</th><th>y</th><th>半径</th><th>长轴</th><th>短轴</th>
+                <th>圆度</th><th>类型</th><th>残差px</th><th>锐度</th><th>内纹</th><th>support</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="row-list" id="missedList"></div>
+      </section>
+
+      <aside class="panel">
+        <h2>检测参数</h2>
+        <div class="controls">
+          <div class="field full"><label>目标类型</label>
+            <select id="targetType">
+              <option value="hole">圆孔</option>
+              <option value="nut">圆形螺帽/圆形件</option>
+              <option value="generic">通用圆形/椭圆</option>
+              <option value="rectangle">矩形</option>
+              <option value="chamfered_rectangle">四角倒角矩形</option>
+              <option value="trapezoid">梯形</option>
+            </select>
+          </div>
+          <div class="field"><label>图形样式</label>
+            <select id="fillMode">
+              <option value="auto">自动</option>
+              <option value="filled">实心</option>
+              <option value="outline">轮廓</option>
+            </select>
+          </div>
+          <div class="field"><label>最小面积 px²</label><input id="minArea" type="number" value="100" min="1"></div>
+          <div class="field"><label>最大面积 px²</label><input id="maxArea" type="number" value="100000000" min="1"></div>
+          <div class="field"><label>最小边长 px</label><input id="minSide" type="number" value="5" min="1"></div>
+          <div class="field"><label>最大边长 px</label><input id="maxSide" type="number" value="10000" min="1"></div>
+          <div class="field"><label>最小填充率</label><input id="minFillRatio" type="number" value="0.2" min="0" max="1" step="0.05"></div>
+          <div class="field"><label>最小半径 px</label><input id="minRadius" type="number" value="10" min="1"></div>
+          <div class="field"><label>最大半径 px</label><input id="maxRadius" type="number" value="60" min="2"></div>
+          <div class="field"><label>Hough 阈值</label><input id="houghThreshold" type="number" value="40" min="1"></div>
+          <div class="field"><label>最小 support</label><input id="minSupport" type="number" value="0.60" min="0" max="1" step="0.05"></div>
+          <div class="field"><label>最大残差</label><input id="maxResidual" type="number" value="0.20" min="0" step="0.01"></div>
+          <div class="field"><label>圆度阈值</label><input id="roundnessThreshold" type="number" value="0.90" min="0" max="1" step="0.01"></div>
+          <div class="field"><label>中值模糊核</label><input id="blurSize" type="number" value="5" min="1" step="2"></div>
+          <div class="field"><label>Canny 低阈值</label><input id="cannyLow" type="number" value="50" min="1"></div>
+          <div class="field"><label>Canny 高阈值</label><input id="cannyHigh" type="number" value="150" min="1"></div>
+          <div class="field"><label>匹配容差 px</label><input id="matchTolerance" type="number" value="20" min="1"></div>
+          <div class="field full check"><input id="useContours" type="checkbox"><label for="useContours">启用 Canny 轮廓候选（更慢，默认关闭）</label></div>
+          <div class="field full check"><input id="rejectHighlight" type="checkbox"><label for="rejectHighlight">过滤亮斑高光（默认关闭）</label></div>
+          <div class="field"><label>高光亮度差阈值</label><input id="highlightThreshold" type="number" value="40" min="0"></div>
+          <div class="field full check"><input id="useHighlightSharpness" type="checkbox"><label for="useHighlightSharpness">启用边缘锐度二次过滤（默认关闭）</label></div>
+          <div class="field"><label>高光边缘锐度阈值</label><input id="highlightSharpness" type="number" value="25" min="0"></div>
+          <div class="field full check"><input id="rejectTexture" type="checkbox" checked><label for="rejectTexture">过滤文字/二维码纹理区域（默认开启）</label></div>
+          <div class="field"><label>最大内部边缘密度</label><input id="maxInsideEdgeDensity" type="number" value="8" min="0"></div>
+          <div class="field full check"><input id="roiEnabled" type="checkbox"><label for="roiEnabled">启用 ROI 过滤</label></div>
+          <div class="field"><label>ROI x</label><input id="roiX" type="number" value="648"></div>
+          <div class="field"><label>ROI y</label><input id="roiY" type="number" value="0"></div>
+          <div class="field"><label>ROI w</label><input id="roiW" type="number" value="968"></div>
+          <div class="field"><label>ROI h</label><input id="roiH" type="number" value="2003"></div>
+        </div>
+
+        <h2 style="margin-top: 14px">真值与评估</h2>
+        <textarea id="truthInput" placeholder='[{ "x": 336.6, "y": 126.1, "radius": 36.1 }, ...]'></textarea>
+        <div class="row-list" id="falseList"></div>
+
+        <h2 style="margin-top: 14px">批量参数搜索</h2>
+        <textarea id="gridInput">{
+  "hough_threshold": { "min": 35, "max": 50, "step": 5 },
+  "min_support": { "min": 0.6, "max": 0.9, "step": 0.1 }
+}</textarea>
+        <button class="button warn" id="gridBtn">批量搜索</button>
+        <div class="table-wrap" style="margin-top: 8px; max-height: 260px">
+          <table id="gridTable">
+            <thead>
+              <tr><th>F1</th><th>Precision</th><th>Recall</th><th>TP</th><th>FP</th><th>FN</th><th>数量</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="error" id="errorBox"></div>
+      </aside>
+    </div>
+
+    <details class="panel help-panel" open>
+      <summary>参数说明</summary>
+      <div class="help-body">
+        <table class="help-table">
+          <thead>
+            <tr>
+              <th>参数</th>
+              <th>默认值</th>
+              <th>作用</th>
+              <th>怎么调</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>目标类型</td><td>圆孔</td>
+              <td>圆孔、圆形螺帽、通用圆形/椭圆走圆拟合；矩形、四角倒角矩形、梯形走轮廓多边形检测。</td>
+              <td>匹配黑色螺帽用“圆形螺帽/圆形件”；匹配矩形、倒角矩形、梯形直接切换对应类型。</td>
+            </tr>
+            <tr>
+              <td>图形样式</td><td>自动</td>
+              <td>自动同时接受实心图形和线框轮廓；实心模式要求填充率高；轮廓模式不检查填充率，适合 CAD/线框图。</td>
+              <td>线框图匹配不到时切到“轮廓”。</td>
+            </tr>
+            <tr>
+              <td>最小/最大面积</td><td>100 / 100000000</td>
+              <td>只检测面积落在该范围内的矩形、倒角矩形、梯形。</td>
+              <td>漏检就调小最小面积；误检大区域就调小最大面积。</td>
+            </tr>
+            <tr>
+              <td>最小填充率</td><td>0.2</td>
+              <td>轮廓面积与外接框面积的比例，低于该值会当成边缘碎片丢弃。</td>
+              <td>实心图形漏检就调低；边缘碎片误检就调高。</td>
+            </tr>
+            <tr>
+              <td>最小/最大边长</td><td>5 / 10000</td>
+              <td>只检测外接框长边和短边都落在该范围内的多边形。</td>
+              <td>小图形漏检就调小最小边长。</td>
+            </tr>
+            <tr>
+              <td>最小半径</td><td>10</td>
+              <td>孔候选半径下限，单位像素。</td>
+              <td>孔小就调低。</td>
+            </tr>
+            <tr>
+              <td>最大半径</td><td>60</td>
+              <td>孔候选半径上限，单位像素。</td>
+              <td>孔大就调高。</td>
+            </tr>
+            <tr>
+              <td>Hough 阈值</td><td>40</td>
+              <td>Hough 圆检测需要多少投票才接受候选。</td>
+              <td>调低更容易检出，误检更多；调高更严格。</td>
+            </tr>
+            <tr>
+              <td>最小 support</td><td>0.60</td>
+              <td>拟合圆圆周上，36 个角度分区里有多少比例存在边缘。</td>
+              <td>漏检就调低，误检就调高，例如 0.80/0.90。</td>
+            </tr>
+            <tr>
+              <td>最大残差</td><td>0.20</td>
+              <td>圆拟合的归一化平均径向误差上限。</td>
+              <td>越小要求边缘越圆；越大允许孔更粗糙。</td>
+            </tr>
+            <tr>
+              <td>圆度阈值</td><td>0.90</td>
+              <td>短轴/长轴大于等于阈值判为圆，否则判为椭圆。</td>
+              <td>想把偏椭圆判为椭圆，就调高到 0.95/0.98。</td>
+            </tr>
+            <tr>
+              <td>中值模糊核</td><td>5</td>
+              <td>检测前做中值滤波，降低图像噪声。</td>
+              <td>噪点多就调大；小孔建议保持 3 或 5。</td>
+            </tr>
+            <tr>
+              <td>Canny 低阈值</td><td>50</td>
+              <td>边缘检测低阈值，控制弱边缘是否保留。</td>
+              <td>调低会保留更多边缘。</td>
+            </tr>
+            <tr>
+              <td>Canny 高阈值</td><td>150</td>
+              <td>边缘检测高阈值，控制强边缘。</td>
+              <td>调低更容易检测到孔边，也会引入更多噪声。</td>
+            </tr>
+            <tr>
+              <td>匹配容差 px</td><td>20</td>
+              <td>评估真值时，检测中心和真值中心距离在这个范围内算正确检出。</td>
+              <td>漏检多就调大，要求严格就调小。</td>
+            </tr>
+            <tr>
+              <td>启用 Canny 轮廓候选</td><td>关闭</td>
+              <td>额外用 Canny 轮廓拟合椭圆，补 Hough 漏掉的椭圆孔。</td>
+              <td>椭圆漏检时打开，但更慢，误检也可能增加。</td>
+            </tr>
+            <tr>
+              <td>过滤亮斑高光</td><td>关闭</td>
+              <td>当圆内部平均灰度明显高于外部时，把它当作高光区域剔除。</td>
+              <td>高光误检多就打开；如果真实孔也是亮斑，则需要调高阈值。</td>
+            </tr>
+            <tr>
+              <td>高光亮度差阈值</td><td>40</td>
+              <td>内部平均灰度减去外部平均灰度的差值，超过该值才按高光过滤。</td>
+              <td>过滤太狠就调大，漏高光就调小。</td>
+            </tr>
+            <tr>
+              <td>高光边缘锐度阈值</td><td>25</td>
+              <td>启用“边缘锐度二次过滤”后，柔和高光按亮度差乘以 1.5 参与过滤，亮度阈值仍然有效。</td>
+              <td>柔和高光仍漏就调大；误删锐利孔就调小。</td>
+            </tr>
+            <tr>
+              <td>过滤文字/二维码纹理区域</td><td>开启</td>
+              <td>圆内部边缘密度过高时，很可能是文字、二维码、图案而不是孔。</td>
+              <td>误删有内部纹理的孔就关闭。</td>
+            </tr>
+            <tr>
+              <td>最大内部边缘密度</td><td>8</td>
+              <td>圆内部平均边缘强度超过该值时按纹理区域过滤。</td>
+              <td>误删多就调大；文字/二维码仍误检就调小。</td>
+            </tr>
+            <tr>
+              <td>ROI x/y/w/h</td><td>648,0,968,2003</td>
+              <td>只保留中心落在 ROI 内的孔。</td>
+              <td>只检测模板区域时启用。</td>
+            </tr>
+            <tr>
+              <td>真值 JSON</td><td>空</td>
+              <td>提供期望孔位，用于计算 TP/FP/FN、Precision/Recall/F1。</td>
+              <td>格式如 [{"x":336.6,"y":126.1,"radius":36.1}]。</td>
+            </tr>
+            <tr>
+              <td>批量参数搜索</td><td>-</td>
+              <td>对指定参数范围逐组运行检测，并用 F1 排序结果。</td>
+              <td>需要先填写真值 JSON，否则只能按检出数量排序。</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="help-tips">
+          <div class="tip"><b>漏检孔：</b>调低 Hough 阈值、最小 support，调低 Canny 低阈值，放宽最大半径，必要时打开 Canny 轮廓候选。</div>
+          <div class="tip"><b>误检多：</b>调高 Hough 阈值、最小 support，调低最大残差，启用 ROI。</div>
+          <div class="tip"><b>椭圆被识别成圆：</b>调高圆度阈值，例如 0.95 或 0.98。</div>
+          <div class="tip"><b>圆孔被识别成椭圆：</b>调低圆度阈值，例如 0.85。</div>
+          <div class="tip"><b>速度慢：</b>缩小 ROI、缩小半径范围、调高 Hough 阈值，不要开启 Canny 轮廓候选。</div>
+          <div class="tip"><b>匹配容差和真值：</b>不影响检测结果，只影响右侧的漏检/误检评估。</div>
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <div class="image-modal" id="imageModal" hidden>
+    <div class="modal-toolbar">
+      <button class="button" id="zoomInBtn">放大</button>
+      <button class="button" id="zoomOutBtn">缩小</button>
+      <button class="button" id="zoomResetBtn">1:1</button>
+      <button class="button" id="zoomFitBtn">适应窗口</button>
+      <span class="zoom-info" id="zoomInfo">100%</span>
+      <button class="button" id="closeZoomBtn">关闭</button>
+    </div>
+    <div class="zoom-stage" id="zoomStage">
+      <img id="zoomImg" alt="放大查看识别结果">
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      sample: "",
+      image: "",
+      original: "",
+      overlay: "",
+      results: [],
+      metrics: null,
+      params: {},
+      roi: null,
+      showOverlay: true,
+      zoom: {
+        scale: 1,
+        tx: 0,
+        ty: 0,
+        panStartX: 0,
+        panStartY: 0,
+        panStartTx: 0,
+        panStartTy: 0,
+        pointers: new Map(),
+        pinchDistance: 0,
+        pinchScale: 1
+      }
+    };
+
+    const $ = id => document.getElementById(id);
+
+    const DEFAULT_PARAMS = {
+      target_type: "hole",
+      fill_mode: "auto",
+      min_radius: 10,
+      max_radius: 60,
+      min_area: 100,
+      max_area: 100000000,
+      min_side: 5,
+      max_side: 10000,
+      min_fill_ratio: 0.2,
+      hough_threshold: 40,
+      min_support: 0.60,
+      max_residual: 0.20,
+      roundness_threshold: 0.90,
+      blur_size: 5,
+      canny_low: 50,
+      canny_high: 150,
+      use_contours: false,
+      reject_highlight: false,
+      highlight_threshold: 40,
+      use_highlight_sharpness: false,
+      highlight_sharpness: 25,
+      reject_texture: true,
+      max_inside_edge_density: 8
+    };
+
+    function showToast(message, type = "info", duration = 3200) {
+      const container = $("toastContainer");
+      const toast = document.createElement("div");
+      toast.className = `toast ${type}`;
+      toast.textContent = message;
+      toast.setAttribute("role", "status");
+      container.appendChild(toast);
+      setTimeout(() => {
+        toast.classList.add("fade");
+        setTimeout(() => toast.remove(), 220);
+      }, duration);
+    }
+
+    function clampZoomScale(value) {
+      return Math.min(20, Math.max(0.05, value));
+    }
+
+    function applyZoomTransform() {
+      const stage = $("zoomStage");
+      const img = $("zoomImg");
+      const contentWidth = img.naturalWidth * state.zoom.scale;
+      const contentHeight = img.naturalHeight * state.zoom.scale;
+      const minTx = Math.min(0, stage.clientWidth - contentWidth);
+      const maxTx = Math.max(0, stage.clientWidth - contentWidth);
+      const minTy = Math.min(0, stage.clientHeight - contentHeight);
+      const maxTy = Math.max(0, stage.clientHeight - contentHeight);
+      state.zoom.tx = Math.min(maxTx, Math.max(minTx, state.zoom.tx));
+      state.zoom.ty = Math.min(maxTy, Math.max(minTy, state.zoom.ty));
+      img.style.transform = `translate(${state.zoom.tx}px, ${state.zoom.ty}px) scale(${state.zoom.scale})`;
+      $("zoomInfo").textContent = `${Math.round(state.zoom.scale * 100)}%`;
+    }
+
+    function zoomFit() {
+      const stage = $("zoomStage");
+      const img = $("zoomImg");
+      if (!img.naturalWidth || !img.naturalHeight) return;
+      state.zoom.scale = Math.min(
+        stage.clientWidth / img.naturalWidth,
+        stage.clientHeight / img.naturalHeight
+      ) * 0.95;
+      state.zoom.scale = clampZoomScale(state.zoom.scale);
+      state.zoom.tx = (stage.clientWidth - img.naturalWidth * state.zoom.scale) / 2;
+      state.zoom.ty = (stage.clientHeight - img.naturalHeight * state.zoom.scale) / 2;
+      applyZoomTransform();
+    }
+
+    function zoomReset() {
+      state.zoom.scale = 1;
+      state.zoom.tx = 0;
+      state.zoom.ty = 0;
+      applyZoomTransform();
+    }
+
+    function zoomBy(factor, clientX, clientY) {
+      const stage = $("zoomStage");
+      const rect = stage.getBoundingClientRect();
+      const cursorX = clientX === undefined ? rect.left + rect.width / 2 : clientX;
+      const cursorY = clientY === undefined ? rect.top + rect.height / 2 : clientY;
+      const localX = (cursorX - rect.left - state.zoom.tx) / state.zoom.scale;
+      const localY = (cursorY - rect.top - state.zoom.ty) / state.zoom.scale;
+      state.zoom.scale = clampZoomScale(state.zoom.scale * factor);
+      state.zoom.tx = cursorX - rect.left - localX * state.zoom.scale;
+      state.zoom.ty = cursorY - rect.top - localY * state.zoom.scale;
+      applyZoomTransform();
+    }
+
+    function openZoom() {
+      if (!state.overlay && !state.original) return;
+      const img = $("zoomImg");
+      img.src = state.showOverlay ? state.overlay : state.original;
+      $("imageModal").hidden = false;
+      document.body.style.overflow = "hidden";
+      state.zoom.scale = 1;
+      state.zoom.tx = 0;
+      state.zoom.ty = 0;
+      if (img.complete && img.naturalWidth) {
+        zoomFit();
+      } else {
+        img.onload = zoomFit;
+      }
+    }
+
+    function closeZoom() {
+      $("imageModal").hidden = true;
+      document.body.style.overflow = "";
+      state.zoom.pointers.clear();
+      $("zoomStage").classList.remove("panning");
+    }
+
+    function pointerDistance() {
+      const points = [...state.zoom.pointers.values()];
+      if (points.length < 2) return 0;
+      return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+    }
+
+    function pointerCenter() {
+      const points = [...state.zoom.pointers.values()];
+      if (points.length < 2) return { x: 0, y: 0 };
+      return {
+        x: (points[0].x + points[1].x) / 2,
+        y: (points[0].y + points[1].y) / 2
+      };
+    }
+
+    function readParams() {
+      return {
+        target_type: $("targetType").value,
+        fill_mode: $("fillMode").value,
+        min_radius: Number($("minRadius").value),
+        max_radius: Number($("maxRadius").value),
+        min_area: Number($("minArea").value),
+        max_area: Number($("maxArea").value),
+        min_side: Number($("minSide").value),
+        max_side: Number($("maxSide").value),
+        min_fill_ratio: Number($("minFillRatio").value),
+        hough_threshold: Number($("houghThreshold").value),
+        min_support: Number($("minSupport").value),
+        max_residual: Number($("maxResidual").value),
+        roundness_threshold: Number($("roundnessThreshold").value),
+        blur_size: Number($("blurSize").value),
+        canny_low: Number($("cannyLow").value),
+        canny_high: Number($("cannyHigh").value),
+        use_contours: $("useContours").checked,
+        reject_highlight: $("rejectHighlight").checked,
+        highlight_threshold: Number($("highlightThreshold").value),
+        use_highlight_sharpness: $("useHighlightSharpness").checked,
+        highlight_sharpness: Number($("highlightSharpness").value),
+        reject_texture: $("rejectTexture").checked,
+        max_inside_edge_density: Number($("maxInsideEdgeDensity").value)
+      };
+    }
+
+    function readTruth() {
+      const raw = $("truthInput").value.trim();
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (error) {
+        $("errorBox").textContent = "真值 JSON 格式错误";
+        return [];
+      }
+    }
+
+    function readRoi() {
+      if (!$("roiEnabled").checked) return null;
+      return [Number($("roiX").value), Number($("roiY").value), Number($("roiW").value), Number($("roiH").value)];
+    }
+
+    function payload() {
+      const body = {
+        params: readParams(),
+        expected: readTruth(),
+        match_tolerance: Number($("matchTolerance").value),
+        roi: readRoi()
+      };
+      if (state.sample) body.sample = state.sample;
+      else if (state.image) body.image = state.image;
+      return body;
+    }
+
+    async function postJson(url, body) {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "请求失败");
+      return data;
+    }
+
+    function renderImage() {
+      $("overlayImg").src = state.showOverlay ? state.overlay : state.original;
+      $("toggleImgBtn").textContent = state.showOverlay ? "切换：原图" : "切换：标注图";
+    }
+
+    function renderResult(data) {
+      state.original = `/api/image?image_id=${data.image_id}&mode=original`;
+      state.overlay = `/api/image?image_id=${data.image_id}&mode=overlay`;
+      state.results = data.results;
+      state.metrics = data.metrics;
+      state.params = data.params;
+      $("imageInfo").textContent = `${data.width} x ${data.height}`;
+      $("elapsedInfo").textContent = `${data.elapsed_ms} ms`;
+      $("errorBox").textContent = "";
+      renderImage();
+      renderTable();
+      renderMetrics();
+      renderTruthLists();
+    }
+
+    function renderTable() {
+      const target = state.params.target_type || "hole";
+      if (["rectangle", "chamfered_rectangle", "trapezoid"].includes(target)) {
+        renderShapeTable(target);
+        return;
+      }
+      const tbody = $("resultTable").querySelector("tbody");
+      tbody.innerHTML = "";
+      for (const row of state.results) {
+        const tr = document.createElement("tr");
+        const cells = [
+          row.index,
+          row.x,
+          row.y,
+          row.radius,
+          row.major_radius,
+          row.minor_radius,
+          row.roundness,
+          row.shape,
+          row.residual_px,
+          row.edge_sharpness,
+          row.inside_edge_density,
+          row.support
+        ];
+        for (let i = 0; i < cells.length; i++) {
+          const td = document.createElement("td");
+          if (typeof cells[i] === "number") {
+            td.textContent = Number(cells[i].toFixed(3));
+          } else {
+            td.textContent = cells[i];
+          }
+          if (i === 7) td.className = cells[i] === "round" ? "shape-round" : "shape-elliptical";
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderShapeTable(target) {
+      const thead = $("resultTable").querySelector("thead tr");
+      const headers = ["#", "形状", "x", "y", "宽度", "高度", "角度", "面积", "填充率", "得分"];
+      if (target === "chamfered_rectangle") headers.push("倒角");
+      if (target === "trapezoid") headers.push("上宽", "下宽");
+      thead.innerHTML = headers.map(header => `<th>${header}</th>`).join("");
+
+      const tbody = $("resultTable").querySelector("tbody");
+      tbody.innerHTML = "";
+      for (const row of state.results) {
+        const values = [row.index, row.shape, row.x, row.y, row.width, row.height, row.angle, row.area, row.fill_ratio, row.score];
+        if (target === "chamfered_rectangle") values.push(row.chamfer);
+        if (target === "trapezoid") values.push(row.top_width, row.bottom_width);
+        const tr = document.createElement("tr");
+        for (const value of values) {
+          const td = document.createElement("td");
+          if (value === null || value === undefined) {
+            td.textContent = "-";
+          } else if (typeof value === "string") {
+            td.textContent = value;
+          } else {
+            td.textContent = Number(value).toFixed(3);
+          }
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+    }
+
+    function metricValue(value, digits = 2) {
+      return value === null || value === undefined ? "-" : Number(value).toFixed(digits);
+    }
+
+    function renderMetrics() {
+      const m = state.metrics || {};
+      $("metricCount").textContent = state.results.length;
+      $("metricTp").textContent = m.has_truth ? metricValue(m.true_positives, 0) : "-";
+      $("metricFp").textContent = m.has_truth ? metricValue(m.false_positives, 0) : "-";
+      $("metricFn").textContent = m.has_truth ? metricValue(m.false_negatives, 0) : "-";
+      $("metricPrecision").textContent = m.has_truth ? metricValue(m.precision) : "-";
+      $("metricRecall").textContent = m.has_truth ? metricValue(m.recall) : "-";
+      $("metricF1").textContent = m.has_truth ? metricValue(m.f1) : "-";
+      $("metricError").textContent = m.has_truth ? metricValue(m.average_center_error_px) : "-";
+    }
+
+    function renderTruthLists() {
+      const m = state.metrics || {};
+      const missed = $("missedList");
+      const falseList = $("falseList");
+      missed.innerHTML = "";
+      falseList.innerHTML = "";
+      if (!m.has_truth) return;
+      for (const item of m.missed || []) {
+        const div = document.createElement("div");
+        div.className = "row-item";
+        div.textContent = `漏检：(${Number(item.x).toFixed(2)}, ${Number(item.y).toFixed(2)})`;
+        missed.appendChild(div);
+      }
+      for (const item of m.false_detections || []) {
+        const div = document.createElement("div");
+        div.className = "row-item";
+        div.textContent = `误检：(${Number(item.x).toFixed(2)}, ${Number(item.y).toFixed(2)}) 半径 ${Number(item.radius).toFixed(2)}`;
+        falseList.appendChild(div);
+      }
+    }
+
+    async function fit() {
+      try {
+        const data = await postJson("/api/fit", payload());
+        renderResult(data);
+        persistParams();
+        const isPolygon = ["rectangle", "chamfered_rectangle", "trapezoid"].includes(readParams().target_type);
+        showToast(`拟合完成：检出 ${data.results.length} 个${isPolygon ? "形状" : "孔"}`, "success");
+      } catch (error) {
+        $("errorBox").textContent = error.message;
+        showToast(error.message || "拟合失败", "error");
+      }
+    }
+
+    async function loadSample(name) {
+      state.sample = name;
+      state.image = "";
+      await fit();
+    }
+
+    function applyParams(params) {
+      if (params.target_type !== undefined) $("targetType").value = params.target_type;
+      if (params.fill_mode !== undefined) $("fillMode").value = params.fill_mode;
+      if (params.min_radius !== undefined) $("minRadius").value = params.min_radius;
+      if (params.max_radius !== undefined) $("maxRadius").value = params.max_radius;
+      if (params.min_area !== undefined) $("minArea").value = params.min_area;
+      if (params.max_area !== undefined) $("maxArea").value = params.max_area;
+      if (params.min_side !== undefined) $("minSide").value = params.min_side;
+      if (params.max_side !== undefined) $("maxSide").value = params.max_side;
+      if (params.min_fill_ratio !== undefined) $("minFillRatio").value = params.min_fill_ratio;
+      if (params.hough_threshold !== undefined) $("houghThreshold").value = params.hough_threshold;
+      if (params.min_support !== undefined) $("minSupport").value = params.min_support;
+      if (params.max_residual !== undefined) $("maxResidual").value = params.max_residual;
+      if (params.roundness_threshold !== undefined) $("roundnessThreshold").value = params.roundness_threshold;
+      if (params.blur_size !== undefined) $("blurSize").value = params.blur_size;
+      if (params.canny_low !== undefined) $("cannyLow").value = params.canny_low;
+      if (params.canny_high !== undefined) $("cannyHigh").value = params.canny_high;
+      if (params.use_contours !== undefined) $("useContours").checked = Boolean(params.use_contours);
+      if (params.reject_highlight !== undefined) $("rejectHighlight").checked = Boolean(params.reject_highlight);
+      if (params.highlight_threshold !== undefined) $("highlightThreshold").value = params.highlight_threshold;
+      if (params.use_highlight_sharpness !== undefined) $("useHighlightSharpness").checked = Boolean(params.use_highlight_sharpness);
+      if (params.highlight_sharpness !== undefined) $("highlightSharpness").value = params.highlight_sharpness;
+      if (params.reject_texture !== undefined) $("rejectTexture").checked = Boolean(params.reject_texture);
+      if (params.max_inside_edge_density !== undefined) $("maxInsideEdgeDensity").value = params.max_inside_edge_density;
+    }
+
+    function persistParams() {
+      const data = {
+        version: 3,
+        params: readParams(),
+        match_tolerance: Number($("matchTolerance").value),
+        roi_enabled: $("roiEnabled").checked,
+        roi: readRoi(),
+        truth: $("truthInput").value,
+        grid: $("gridInput").value,
+        sample: state.sample || ""
+      };
+      localStorage.setItem("fit_debug_settings", JSON.stringify(data));
+    }
+
+    function restoreParams() {
+      try {
+        const data = JSON.parse(localStorage.getItem("fit_debug_settings") || "{}");
+        if (!data || typeof data !== "object") return;
+        applyParams({ ...DEFAULT_PARAMS, ...(data.params || {}) });
+        if (!data.version || data.version < 3) {
+          $("minArea").value = DEFAULT_PARAMS.min_area;
+          $("maxArea").value = DEFAULT_PARAMS.max_area;
+          $("minSide").value = DEFAULT_PARAMS.min_side;
+          $("maxSide").value = DEFAULT_PARAMS.max_side;
+          $("minFillRatio").value = DEFAULT_PARAMS.min_fill_ratio;
+          $("fillMode").value = DEFAULT_PARAMS.fill_mode;
+        }
+        if (data.match_tolerance !== undefined) $("matchTolerance").value = data.match_tolerance;
+        if (data.roi_enabled !== undefined) $("roiEnabled").checked = Boolean(data.roi_enabled);
+        if (Array.isArray(data.roi) && data.roi.length === 4) {
+          $("roiX").value = data.roi[0];
+          $("roiY").value = data.roi[1];
+          $("roiW").value = data.roi[2];
+          $("roiH").value = data.roi[3];
+        }
+        if (typeof data.truth === "string") $("truthInput").value = data.truth;
+        if (typeof data.grid === "string") $("gridInput").value = data.grid;
+        if (typeof data.sample === "string") state.sample = data.sample;
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    function resetParams() {
+      applyParams(DEFAULT_PARAMS);
+      $("matchTolerance").value = 20;
+      $("roiEnabled").checked = false;
+      $("roiX").value = 648;
+      $("roiY").value = 0;
+      $("roiW").value = 968;
+      $("roiH").value = 2003;
+      $("truthInput").value = "";
+      $("gridInput").value = `{
+  "hough_threshold": { "min": 35, "max": 50, "step": 5 },
+  "min_support": { "min": 0.6, "max": 0.9, "step": 0.1 }
+}`;
+      state.sample = "";
+      localStorage.removeItem("fit_debug_settings");
+    }
+
+    function download(filename, text, type) {
+      const blob = new Blob([text], { type });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function exportJson() {
+      const data = {
+        params: state.params,
+        roi: readRoi(),
+        metrics: state.metrics,
+        holes: state.results
+      };
+      download("fit_debug_result.json", JSON.stringify(data, null, 2), "application/json");
+      showToast("JSON 已导出", "success");
+    }
+
+    function exportCsv() {
+      if (!state.results.length) return;
+      const headers = Object.keys(state.results[0]);
+      const lines = [headers.join(",")];
+      for (const row of state.results) {
+        lines.push(headers.map(key => row[key]).join(","));
+      }
+      download("fit_debug_result.csv", "\uFEFF" + lines.join("\n"), "text/csv;charset=utf-8");
+      showToast("CSV 已导出", "success");
+    }
+
+    async function gridSearch() {
+      try {
+        const grid = JSON.parse($("gridInput").value);
+        const body = payload();
+        body.grid = grid;
+        body.max_combinations = 24;
+        const data = await postJson("/api/grid", body);
+        const tbody = $("gridTable").querySelector("tbody");
+        tbody.innerHTML = "";
+        for (const run of data.runs) {
+          const m = run.metrics;
+          const tr = document.createElement("tr");
+          tr.style.cursor = "pointer";
+          const values = [
+            m.has_truth ? m.f1 : "-",
+            m.has_truth ? m.precision : "-",
+            m.has_truth ? m.recall : "-",
+            m.has_truth ? m.true_positives : "-",
+            m.has_truth ? m.false_positives : "-",
+            m.has_truth ? m.false_negatives : "-",
+            run.count
+          ];
+          for (const value of values) {
+            const td = document.createElement("td");
+            td.textContent = value === null || value === undefined || value === "-" ? value : Number(value).toFixed(2);
+            tr.appendChild(td);
+          }
+          tr.addEventListener("click", () => {
+            applyParams(run.params);
+            fit();
+          });
+          tbody.appendChild(tr);
+        }
+        $("errorBox").textContent = `搜索完成：${data.runs.length} 组结果`;
+        showToast(`批量搜索完成：${data.runs.length} 组结果`, "success");
+      } catch (error) {
+        $("errorBox").textContent = error.message;
+        showToast(error.message || "批量搜索失败", "error");
+      }
+    }
+
+    $("fitBtn").addEventListener("click", fit);
+    $("uploadBtn").addEventListener("click", () => $("fileInput").click());
+    $("fileInput").addEventListener("change", event => {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        state.sample = "";
+        state.image = reader.result;
+        showToast("图片已加载，开始拟合", "info");
+        await fit();
+      };
+      reader.readAsDataURL(file);
+    });
+    $("sample1Btn").addEventListener("click", () => loadSample("raw_image_1_ann1"));
+    $("sample2Btn").addEventListener("click", () => loadSample("multi-demo-2"));
+    $("toggleImgBtn").addEventListener("click", () => {
+      state.showOverlay = !state.showOverlay;
+      renderImage();
+    });
+    $("exportJsonBtn").addEventListener("click", exportJson);
+    $("exportCsvBtn").addEventListener("click", exportCsv);
+    $("gridBtn").addEventListener("click", gridSearch);
+    $("targetType").addEventListener("change", () => {
+      const target = $("targetType").value;
+      $("rejectTexture").checked = target === "hole";
+      $("rejectHighlight").checked = false;
+      const labels = {
+        hole: "圆孔模式",
+        nut: "圆形螺帽模式",
+        generic: "通用圆形件模式",
+        rectangle: "矩形模式",
+        chamfered_rectangle: "四角倒角矩形模式",
+        trapezoid: "梯形模式"
+      };
+      showToast(`已切换为${labels[target] || "当前模式"}`, "info");
+    });
+    $("saveParamsBtn").addEventListener("click", () => {
+      persistParams();
+      showToast("参数已保存", "success");
+    });
+    $("resetParamsBtn").addEventListener("click", () => {
+      resetParams();
+      showToast("已恢复默认参数", "info");
+    });
+    $("overlayImg").addEventListener("click", openZoom);
+    $("zoomInBtn").addEventListener("click", () => zoomBy(1.25));
+    $("zoomOutBtn").addEventListener("click", () => zoomBy(0.8));
+    $("zoomResetBtn").addEventListener("click", zoomReset);
+    $("zoomFitBtn").addEventListener("click", zoomFit);
+    $("closeZoomBtn").addEventListener("click", closeZoom);
+    $("imageModal").addEventListener("click", event => {
+      if (event.target === $("imageModal")) closeZoom();
+    });
+    $("zoomStage").addEventListener("wheel", event => {
+      event.preventDefault();
+      zoomBy(event.deltaY < 0 ? 1.15 : 0.87, event.clientX, event.clientY);
+    }, { passive: false });
+    $("zoomStage").addEventListener("dblclick", zoomFit);
+    $("zoomStage").addEventListener("pointerdown", event => {
+      event.preventDefault();
+      $("zoomStage").setPointerCapture(event.pointerId);
+      state.zoom.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (state.zoom.pointers.size === 2) {
+        state.zoom.pinchDistance = pointerDistance();
+        state.zoom.pinchScale = state.zoom.scale;
+      } else {
+        state.zoom.panStartX = event.clientX;
+        state.zoom.panStartY = event.clientY;
+        state.zoom.panStartTx = state.zoom.tx;
+        state.zoom.panStartTy = state.zoom.ty;
+      }
+      $("zoomStage").classList.add("panning");
+    });
+    $("zoomStage").addEventListener("pointermove", event => {
+      if (!state.zoom.pointers.has(event.pointerId)) return;
+      state.zoom.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      const rect = $("zoomStage").getBoundingClientRect();
+      if (state.zoom.pointers.size === 1) {
+        state.zoom.tx = state.zoom.panStartTx + (event.clientX - state.zoom.panStartX);
+        state.zoom.ty = state.zoom.panStartTy + (event.clientY - state.zoom.panStartY);
+        applyZoomTransform();
+      } else if (state.zoom.pointers.size === 2 && state.zoom.pinchDistance > 0) {
+        const distance = pointerDistance();
+        const center = pointerCenter();
+        const factor = distance / state.zoom.pinchDistance;
+        const localX = (center.x - rect.left - state.zoom.tx) / state.zoom.scale;
+        const localY = (center.y - rect.top - state.zoom.ty) / state.zoom.scale;
+        state.zoom.scale = clampZoomScale(state.zoom.pinchScale * factor);
+        state.zoom.tx = center.x - rect.left - localX * state.zoom.scale;
+        state.zoom.ty = center.y - rect.top - localY * state.zoom.scale;
+        applyZoomTransform();
+      }
+    });
+    const releasePointer = event => {
+      state.zoom.pointers.delete(event.pointerId);
+      if (state.zoom.pointers.size < 2) {
+        state.zoom.pinchDistance = 0;
+      }
+      if (state.zoom.pointers.size === 0) {
+        $("zoomStage").classList.remove("panning");
+      }
+    };
+    $("zoomStage").addEventListener("pointerup", releasePointer);
+    $("zoomStage").addEventListener("pointercancel", releasePointer);
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !$("imageModal").hidden) closeZoom();
+    });
+    restoreParams();
+  </script>
+</body>
+</html>
