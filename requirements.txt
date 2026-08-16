@@ -1,11 +1,2 @@
-# LIF 神经进化数字识别系统
-# 环境用 uv 管理（.venv）。以下为直接依赖版本参考。
-torch>=2.6.0
-torchvision>=0.21.0
 numpy>=1.26
 opencv-python-headless>=4.10
-numba>=0.66          # eco_engine forward 的 LIF 热循环 JIT 加速（v2 优化引入）
-matplotlib>=3.9        # 仅 viz.py 绘图需要
-
-# 开发：测试
-pytest>=8.0
