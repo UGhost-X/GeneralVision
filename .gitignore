@@ -25,3 +25,12 @@ docs/superpowers/
 
 # SDD 执行工作区（ledger/brief/report，gitignored 草稿）
 .superpowers/
+
+# GGUF 模型文件
+*.gguf
+
+# Web 聊天应用运行时产物
+llm_chat_server.out.log
+llm_chat_server.err.log
+llm_chat_server.pid
+test_vision.png

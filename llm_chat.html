@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Qwen3.5 多模态对话 + ROI 比对</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a23; --panel2: #1e222d; --border: #2a2f3a;
+    --text: #e8eaf0; --muted: #9aa3b2; --accent: #4f8cff; --accent2: #6ea8ff;
+    --user-bubble: #23477f; --assistant-bubble: #1e222d;
+    --danger: #ff5c5c; --ok: #4cd964;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: var(--bg); color: var(--text); height: 100vh; overflow: hidden;
+  }
+  .app { display: flex; height: 100vh; }
+  .sidebar {
+    width: 300px; min-width: 300px; background: var(--panel);
+    border-right: 1px solid var(--border); padding: 16px; display: flex;
+    flex-direction: column; gap: 14px; overflow-y: auto;
+  }
+  .sidebar h1 { font-size: 17px; margin: 0 0 4px; }
+  .sidebar .sub { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 6px; }
+  textarea, input[type=number], select {
+    width: 100%; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+    font-size: 13px; font-family: inherit; resize: vertical;
+  }
+  textarea:focus, input:focus, select:focus { outline: 1px solid var(--accent); }
+  .btn {
+    background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    padding: 9px 14px; font-size: 13px; cursor: pointer; font-family: inherit;
+  }
+  .btn:hover { background: var(--accent2); }
+  .btn.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+  .btn.ghost:hover { border-color: var(--accent); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+  .status .dot.busy { background: var(--accent); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .tabbar {
+    display: flex; gap: 4px; padding: 10px 20px 0; background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .tab {
+    padding: 9px 18px; border: 1px solid var(--border); border-bottom: none;
+    border-radius: 10px 10px 0 0; background: var(--panel2); color: var(--muted);
+    cursor: pointer; font-size: 13px; font-family: inherit;
+  }
+  .tab.active { background: var(--bg); color: var(--text); border-color: var(--accent); }
+  .tabpane { display: none; flex: 1; flex-direction: column; min-height: 0; }
+  .tabpane.active { display: flex; }
+  .chat { flex: 1; overflow-y: auto; padding: 24px 0; }
+  .chat-inner { max-width: 860px; margin: 0 auto; padding: 0 24px; display: flex; flex-direction: column; gap: 16px; }
+  .msg { display: flex; gap: 10px; }
+  .msg .avatar {
+    width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; font-size: 14px;
+  }
+  .msg.user .avatar { background: #3b5aa8; }
+  .msg.assistant .avatar { background: #2f3542; }
+  .msg .bubble {
+    background: var(--assistant-bubble); border: 1px solid var(--border);
+    border-radius: 12px; padding: 10px 14px; max-width: 85%;
+    font-size: 14px; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
+  }
+  .msg.user .bubble { background: var(--user-bubble); border-color: transparent; }
+  .bubble pre {
+    background: #12151d; border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; overflow-x: auto; margin: 8px 0;
+  }
+  .bubble code { font-family: Consolas, "Courier New", monospace; font-size: 13px; }
+  .bubble p { margin: 6px 0; }
+  .attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  .attachments img {
+    width: 96px; height: 96px; object-fit: cover; border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+  .thinking { color: var(--muted); font-style: italic; font-size: 13px; }
+  .composer { border-top: 1px solid var(--border); background: var(--panel); padding: 12px 24px 16px; }
+  .composer-inner { max-width: 860px; margin: 0 auto; }
+  .attachments-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .attachment {
+    position: relative; width: 72px; height: 72px; border-radius: 8px; overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .attachment img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .attachment .remove {
+    position: absolute; top: 2px; right: 2px; width: 18px; height: 18px;
+    background: rgba(0,0,0,.7); color: #fff; border: none; border-radius: 50%;
+    cursor: pointer; font-size: 11px; line-height: 18px; text-align: center; padding: 0;
+  }
+  .input-row { display: flex; gap: 8px; align-items: flex-end; }
+  #prompt {
+    flex: 1; min-height: 48px; max-height: 180px; resize: none;
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 14px; font-size: 14px; font-family: inherit;
+  }
+  #prompt:focus { outline: 1px solid var(--accent); }
+  .icon-btn {
+    width: 46px; height: 46px; border-radius: 12px; border: 1px solid var(--border);
+    background: var(--panel2); color: var(--text); cursor: pointer; font-size: 18px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .icon-btn:hover { border-color: var(--accent); }
+  .send-btn { background: var(--accent); border: none; color: #fff; }
+  .send-btn:hover { background: var(--accent2); }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .empty { color: var(--muted); text-align: center; margin-top: 12vh; }
+  .empty .big { font-size: 40px; margin-bottom: 10px; }
+  .error { color: var(--danger); }
+  .settings-row { display: flex; gap: 10px; }
+  .settings-row > div { flex: 1; }
+
+  /* ROI 比对页 */
+  .roi-wrap { flex: 1; overflow-y: auto; padding: 24px; }
+  .roi-inner { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+  .roi-section { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .roi-section h2 { font-size: 15px; margin: 0 0 12px; }
+  .roi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
+  .roi-card {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 8px; text-align: center; overflow: hidden;
+  }
+  .roi-card img { width: 100%; height: 90px; object-fit: contain; border-radius: 6px; background: #0a0c10; }
+  .roi-card .name {
+    font-size: 11px; color: var(--muted); margin-top: 6px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .roi-card { position: relative; }
+  .roi-del {
+    position: absolute; top: 4px; right: 4px; width: 20px; height: 20px;
+    background: rgba(0,0,0,.75); color: #fff; border: none; border-radius: 50%;
+    cursor: pointer; font-size: 11px; line-height: 20px; text-align: center; padding: 0;
+  }
+  .roi-del:hover { background: var(--danger); }
+  .roi-upload-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .roi-preview { width: 120px; height: 120px; border: 1px solid var(--border); border-radius: 10px; object-fit: contain; background: #0a0c10; display: none; }
+  .result-card {
+    display: flex; gap: 14px; align-items: center; background: var(--panel2);
+    border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px;
+  }
+  .result-card img { width: 90px; height: 90px; object-fit: contain; border-radius: 8px; background: #0a0c10; }
+  .result-card .info { flex: 1; min-width: 0; }
+  .result-card .name { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+  .result-card .scores { display: flex; flex-wrap: wrap; gap: 6px; }
+  .score-tag {
+    background: #12151d; border: 1px solid var(--border); border-radius: 6px;
+    padding: 3px 8px; font-size: 11px; color: var(--muted);
+  }
+  .score-tag b { color: var(--text); }
+  .verdict {
+    font-size: 13px; font-weight: 600; padding: 6px 14px; border-radius: 8px; white-space: nowrap;
+  }
+  .verdict.yes { background: rgba(76,217,100,.15); color: var(--ok); border: 1px solid rgba(76,217,100,.4); }
+  .verdict.no { background: rgba(255,92,92,.12); color: var(--danger); border: 1px solid rgba(255,92,92,.35); }
+  .bar { height: 6px; border-radius: 3px; background: #12151d; margin-top: 8px; overflow: hidden; }
+  .bar > div { height: 100%; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div>
+      <h1>Qwen3.5 本地工具</h1>
+      <div class="sub">GGUF · CPU</div>
+      <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">连接中…</span></div>
+    </div>
+    <div id="chatSettings">
+      <div>
+        <label for="systemPrompt">系统提示词（System Prompt）</label>
+        <textarea id="systemPrompt" rows="5" placeholder="例如：你是一个严谨的视觉分析助手…"></textarea>
+      </div>
+      <div class="settings-row">
+        <div>
+          <label for="temperature">温度 <span id="tempVal">0.7</span></label>
+          <input type="range" id="temperature" min="0" max="1.5" step="0.05" value="0.7" style="padding:0">
+        </div>
+        <div>
+          <label for="maxTokens">最大 Token</label>
+          <input type="number" id="maxTokens" min="16" max="8192" step="16" value="512">
+        </div>
+      </div>
+      <button class="btn ghost" id="newChat" style="width:100%">＋ 新建对话</button>
+    </div>
+    <div id="roiSettings" style="display:none">
+      <div class="hint">LLM 比对：模型将待检图与库中每张 ROI 逐一比较。多图处理较慢，约需 20~60 秒。</div>
+      <div>
+        <label for="roiSystemPrompt">比对系统提示词</label>
+        <textarea id="roiSystemPrompt" rows="4"></textarea>
+      </div>
+      <div>
+        <label for="roiUserPrompt">比对指令（用户提示词）</label>
+        <textarea id="roiUserPrompt" rows="9"></textarea>
+        <div class="hint">占位符：{labels}=库图标注列表，{query}=待检图称呼</div>
+      </div>
+      <button class="btn ghost" id="roiPromptReset">↺ 恢复默认提示词</button>
+    </div>
+  </aside>
+
+  <section class="main">
+    <div class="tabbar">
+      <button class="tab active" id="tabBtnChat" onclick="switchTab('chat')">💬 对话</button>
+      <button class="tab" id="tabBtnRoi" onclick="switchTab('roi')">🖼️ ROI 比对</button>
+    </div>
+
+    <!-- 对话页 -->
+    <div class="tabpane active" id="tab-chat">
+      <div class="chat" id="chat">
+        <div class="chat-inner" id="chatInner">
+          <div class="empty" id="empty">
+            <div class="big">🖼️ 💬</div>
+            <div>输入文字或上传图片，开始对话</div>
+          </div>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="composer-inner">
+          <div class="attachments-row" id="attachmentsRow"></div>
+          <div class="input-row">
+            <button class="icon-btn" id="uploadBtn" title="上传图片（自动压缩）">🖼️</button>
+            <input type="file" id="fileInput" accept="image/*" multiple hidden>
+            <textarea id="prompt" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+            <button class="icon-btn send-btn" id="sendBtn" title="发送">➤</button>
+          </div>
+          <div class="hint">图片上传前会自动压缩到 ≤1024px · 推理期间请勿重复发送</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ROI 比对页 -->
+    <div class="tabpane" id="tab-roi">
+      <div class="roi-wrap">
+        <div class="roi-inner">
+          <div class="roi-section">
+            <h2>ROI 图片库 <span id="roiLibCount" style="color:var(--muted);font-weight:400"></span></h2>
+            <div class="roi-grid" id="roiGrid"><span class="hint">加载中…</span></div>
+          </div>
+          <div class="roi-section">
+            <h2>上传 ROI 入库</h2>
+            <div class="roi-upload-row">
+              <button class="btn ghost" id="roiLibUploadBtn">📤 选择图片（可多选）</button>
+              <input type="file" id="roiLibFileInput" accept="image/*" multiple hidden>
+              <span class="hint" id="roiLibUploadHint"></span>
+            </div>
+            <div class="hint" style="margin-top:8px">上传后自动加入库；鼠标移到卡片右上角 ✕ 可删除</div>
+          </div>
+          <div class="roi-section">
+            <h2>上传 ROI 进行比对</h2>
+            <div class="roi-upload-row">
+              <button class="btn ghost" id="roiUploadBtn">📤 选择图片</button>
+              <input type="file" id="roiFileInput" accept="image/*" hidden>
+              <img class="roi-preview" id="roiPreview" alt="">
+              <button class="btn" id="roiMatchBtn" disabled>🔍 LLM 比对</button>
+            </div>
+          </div>
+          <div class="roi-section" id="roiResultSection" style="display:none">
+            <h2>LLM 比对结果</h2>
+            <div style="display:flex;flex-direction:column;gap:12px" id="roiResults"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const chatInner = $("chatInner"), empty = $("empty");
+const promptEl = $("prompt"), sendBtn = $("sendBtn"), uploadBtn = $("uploadBtn"), fileInput = $("fileInput");
+const attachmentsRow = $("attachmentsRow");
+const statusDot = $("statusDot"), statusText = $("statusText");
+
+const MAX_IMG_EDGE = 1024;
+const MAX_ATTACH = 2;
+const NO_DATA_TIMEOUT_MS = 300000;
+
+let attachments = [];
+let messages = [];
+let generating = false;
+let aborted = false;
+let roiQueryDataUrl = null;
+
+// ---------- 持久化（localStorage） ----------
+const LS_KEYS = {
+  messages: "qwen_chat_messages",
+  system: "qwen_chat_system",
+  temperature: "qwen_chat_temperature",
+  maxTokens: "qwen_chat_max_tokens",
+  roiSystem: "qwen_roi_system",
+  roiUser: "qwen_roi_user",
+  tab: "qwen_active_tab",
+};
+
+function lsGet(key, def) {
+  try { const v = localStorage.getItem(key); return v === null ? def : JSON.parse(v); }
+  catch (e) { return def; }
+}
+function lsSet(key, val) {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { console.warn("持久化写入失败", e); }
+}
+function lsRemove(key) {
+  try { localStorage.removeItem(key); } catch (e) { }
+}
+
+function extractText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.filter((p) => p && p.type === "text").map((p) => p.text || "").join(" ");
+  return "";
+}
+function hasImagePart(content) {
+  return Array.isArray(content) && content.some((p) => p && p.type === "image_url");
+}
+
+function saveChatState() {
+  lsSet(LS_KEYS.messages, messages.map((m) => ({ role: m.role, text: extractText(m.content), hasImage: hasImagePart(m.content) })));
+  lsSet(LS_KEYS.system, $("systemPrompt").value);
+  lsSet(LS_KEYS.temperature, $("temperature").value);
+  lsSet(LS_KEYS.maxTokens, $("maxTokens").value);
+}
+
+function restoreChatState() {
+  const saved = lsGet(LS_KEYS.messages, []);
+  messages = [];
+  for (const m of saved) {
+    const msg = { role: m.role, content: m.text || "" };
+    messages.push(msg);
+    const attHtml = m.hasImage ? '<div class="attachments"><span class="hint">[图片]</span></div>' : "";
+    addMessage(m.role, renderMarkdown(msg.content || ""), attHtml);
+  }
+  const sys = lsGet(LS_KEYS.system, null);
+  if (sys !== null) $("systemPrompt").value = sys;
+  const t = lsGet(LS_KEYS.temperature, null);
+  if (t !== null) { $("temperature").value = t; $("tempVal").textContent = t; }
+  const mt = lsGet(LS_KEYS.maxTokens, null);
+  if (mt !== null) $("maxTokens").value = mt;
+}
+
+// ---------- Tab ----------
+function switchTab(name) {
+  $("tabBtnChat").classList.toggle("active", name === "chat");
+  $("tabBtnRoi").classList.toggle("active", name === "roi");
+  $("tab-chat").classList.toggle("active", name === "chat");
+  $("tab-roi").classList.toggle("active", name === "roi");
+  $("chatSettings").style.display = name === "chat" ? "" : "none";
+  $("roiSettings").style.display = name === "roi" ? "" : "none";
+  if (name === "roi") loadRoiLibrary();
+  lsSet(LS_KEYS.tab, name);
+}
+
+// ---------- 工具 ----------
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function renderMarkdown(text) {
+  const parts = text.split(/```/);
+  let html = "";
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) {
+      const code = parts[i].replace(/^\w+\n/, "");
+      html += "<pre><code>" + escapeHtml(code) + "</code></pre>";
+    } else {
+      let seg = escapeHtml(parts[i]);
+      seg = seg.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+      seg = seg.replace(/`([^`]+)`/g, "<code>$1</code>");
+      html += seg.replace(/\n/g, "<br>");
+    }
+  }
+  return html;
+}
+
+function addMessage(role, contentHtml, attachmentsHtml) {
+  empty.style.display = "none";
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + role;
+  const avatar = role === "user" ? "🧑" : "🤖";
+  wrap.innerHTML =
+    '<div class="avatar">' + avatar + "</div>" +
+    '<div class="bubble">' + (attachmentsHtml || "") + contentHtml + "</div>";
+  chatInner.appendChild(wrap);
+  scrollToBottom();
+  return wrap.querySelector(".bubble");
+}
+
+function scrollToBottom() {
+  $("chat").scrollTop = $("chat").scrollHeight;
+}
+
+// ---------- 图片处理（对话 & ROI 共用） ----------
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+function loadImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+async function downscaleImage(dataUrl, maxEdge) {
+  const img = await loadImage(dataUrl);
+  const longEdge = Math.max(img.naturalWidth, img.naturalHeight);
+  if (longEdge <= maxEdge) return dataUrl;
+  const scale = maxEdge / longEdge;
+  const w = Math.max(1, Math.round(img.naturalWidth * scale));
+  const h = Math.max(1, Math.round(img.naturalHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL("image/jpeg", 0.85);
+}
+
+// ---------- 对话 ----------
+uploadBtn.onclick = () => fileInput.click();
+fileInput.onchange = async () => {
+  for (const file of fileInput.files) {
+    if (attachments.length >= MAX_ATTACH) break;
+    try {
+      const dataUrl = await readFileAsDataURL(file);
+      const resized = await downscaleImage(dataUrl, MAX_IMG_EDGE);
+      attachments.push({ name: file.name, mime: "image/jpeg", dataUrl: resized });
+    } catch (e) { console.error("图片读取失败", e); }
+  }
+  fileInput.value = "";
+  renderAttachments();
+};
+
+function renderAttachments() {
+  attachmentsRow.innerHTML = "";
+  attachments.forEach((att, i) => {
+    const el = document.createElement("div");
+    el.className = "attachment";
+    el.innerHTML =
+      '<img src="' + att.dataUrl + '" alt="' + escapeHtml(att.name) + '">' +
+      '<button class="remove" title="移除">✕</button>';
+    el.querySelector(".remove").onclick = () => {
+      attachments.splice(i, 1);
+      renderAttachments();
+    };
+    attachmentsRow.appendChild(el);
+  });
+}
+
+function buildUserContent(text) {
+  if (attachments.length === 0) return text;
+  const content = [];
+  for (const att of attachments) content.push({ type: "image_url", image_url: { url: att.dataUrl } });
+  if (text.trim()) content.push({ type: "text", text });
+  return content;
+}
+
+function userAttachmentsHtml() {
+  if (attachments.length === 0) return "";
+  let html = '<div class="attachments">';
+  for (const att of attachments) html += '<img src="' + att.dataUrl + '">';
+  html += "</div>";
+  return html;
+}
+
+async function send() {
+  if (generating) return;
+  const text = promptEl.value.trim();
+  if (!text && attachments.length === 0) return;
+
+  const userMsg = { role: "user", content: buildUserContent(text) };
+  messages.push(userMsg);
+  saveChatState();
+
+  const userBubble = addMessage("user", renderMarkdown(text || "（图片）"), userAttachmentsHtml());
+  attachments = [];
+  renderAttachments();
+  promptEl.value = "";
+  promptEl.style.height = "auto";
+
+  const assistantBubble = addMessage("assistant", '<span class="thinking">思考中…</span>');
+  generating = true;
+  aborted = false;
+  setBusy(true);
+  sendBtn.disabled = true;
+
+  const payload = {
+    system_prompt: $("systemPrompt").value,
+    max_tokens: parseInt($("maxTokens").value, 10) || 512,
+    temperature: parseFloat($("temperature").value),
+    messages: messages,
+  };
+
+  let fullText = "";
+  let gotDone = false;
+  let timer = null;
+  try {
+    const resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok || !resp.body) throw new Error("HTTP " + resp.status);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    const resetTimer = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!gotDone && generating) {
+          aborted = true;
+          reader.cancel();
+        }
+      }, NO_DATA_TIMEOUT_MS);
+    };
+    resetTimer();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (aborted) break;
+      resetTimer();
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop();
+      for (const evt of events) {
+        const line = evt.trim();
+        if (!line.startsWith("data:")) continue;
+        const data = JSON.parse(line.slice(5).trim());
+        if (data.error) throw new Error(data.error);
+        if (data.delta) {
+          fullText += data.delta;
+          assistantBubble.innerHTML = renderMarkdown(fullText);
+          scrollToBottom();
+        }
+        if (data.done) gotDone = true;
+      }
+    }
+    if (timer) clearTimeout(timer);
+
+    if (aborted) throw new Error("等待响应超时，请重试（大图处理较慢）");
+    if (!gotDone) throw new Error("连接中断，响应不完整，请重试");
+    if (fullText) {
+      messages.push({ role: "assistant", content: fullText });
+      saveChatState();
+    }
+  } catch (err) {
+    assistantBubble.innerHTML = '<span class="error">出错了：' + escapeHtml(err.message) + "</span>";
+  } finally {
+    generating = false;
+    setBusy(false);
+    sendBtn.disabled = false;
+    promptEl.focus();
+  }
+}
+
+function setBusy(busy) {
+  statusDot.className = "dot" + (busy ? " busy" : "");
+  statusText.textContent = busy ? "生成中…" : "就绪";
+}
+
+sendBtn.onclick = send;
+promptEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+promptEl.addEventListener("input", () => {
+  promptEl.style.height = "auto";
+  promptEl.style.height = Math.min(promptEl.scrollHeight, 180) + "px";
+});
+
+$("newChat").onclick = () => {
+  messages = [];
+  chatInner.querySelectorAll(".msg").forEach((el) => el.remove());
+  empty.style.display = "";
+  lsRemove(LS_KEYS.messages);
+};
+
+$("temperature").oninput = (e) => { $("tempVal").textContent = e.target.value; saveChatState(); };
+$("maxTokens").addEventListener("change", saveChatState);
+$("systemPrompt").addEventListener("change", saveChatState);
+
+// ROI 比对提示词（默认值与后端一致）
+const DEFAULT_ROI_SYSTEM = "你是一个严谨的工业 ROI 图像比对专家，只依据图片中的实际内容客观判断，不要臆测或编造，也不要被文件名误导。";
+const DEFAULT_ROI_USER = "第一张图是【待检 ROI】，后面的图是库中的 ROI 图，标注为：{labels}。请仔细观察并逐张比较待检图与库中每张图，判断待检 ROI 与库中哪一张最相似，以及整体上是否与库中某张相似。严格按以下格式回答，不要输出多余内容：\n最相似: <字母:文件名 或 无>\n是否相似: <是/否>\n理由: <一两句话>";
+
+function resetRoiPrompts() {
+  $("roiSystemPrompt").value = DEFAULT_ROI_SYSTEM;
+  $("roiUserPrompt").value = DEFAULT_ROI_USER;
+  lsSet(LS_KEYS.roiSystem, DEFAULT_ROI_SYSTEM);
+  lsSet(LS_KEYS.roiUser, DEFAULT_ROI_USER);
+}
+
+function restoreRoiPrompts() {
+  const rs = lsGet(LS_KEYS.roiSystem, null);
+  $("roiSystemPrompt").value = rs !== null ? rs : DEFAULT_ROI_SYSTEM;
+  const ru = lsGet(LS_KEYS.roiUser, null);
+  $("roiUserPrompt").value = ru !== null ? ru : DEFAULT_ROI_USER;
+}
+restoreRoiPrompts();
+$("roiPromptReset").onclick = resetRoiPrompts;
+$("roiSystemPrompt").addEventListener("change", () => lsSet(LS_KEYS.roiSystem, $("roiSystemPrompt").value));
+$("roiUserPrompt").addEventListener("change", () => lsSet(LS_KEYS.roiUser, $("roiUserPrompt").value));
+
+// ---------- ROI 比对 ----------
+async function loadRoiLibrary() {
+  const grid = $("roiGrid");
+  try {
+    const resp = await fetch("/api/roi/library");
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || "加载失败");
+    $("roiLibCount").textContent = "（" + data.count + " 张）";
+    grid.innerHTML = "";
+    for (const name of data.names) {
+      const card = document.createElement("div");
+      card.className = "roi-card";
+      card.innerHTML =
+        '<img src="/api/roi/image/' + encodeURIComponent(name) + '" alt="" loading="lazy">' +
+        '<button class="roi-del" title="删除">✕</button>' +
+        '<div class="name" title="' + escapeHtml(name) + '">' + escapeHtml(name) + "</div>";
+      card.querySelector(".roi-del").onclick = async () => {
+        if (!confirm("确定从库中删除 " + name + " 吗？")) return;
+        try {
+          const resp = await fetch("/api/roi/" + encodeURIComponent(name), { method: "DELETE" });
+          const data = await resp.json();
+          if (!data.ok) alert(data.error || "删除失败");
+        } catch (e) {
+          alert("删除出错：" + e.message);
+        }
+        loadRoiLibrary();
+      };
+      grid.appendChild(card);
+    }
+  } catch (e) {
+    grid.innerHTML = '<span class="error">ROI 库加载失败：' + escapeHtml(e.message) + "</span>";
+  }
+}
+
+$("roiLibUploadBtn").onclick = () => $("roiLibFileInput").click();
+$("roiLibFileInput").onchange = async () => {
+  const files = Array.from($("roiLibFileInput").files);
+  $("roiLibFileInput").value = "";
+  if (!files.length) return;
+  const hint = $("roiLibUploadHint");
+  hint.textContent = "上传中…";
+  let ok = 0, fail = 0;
+  for (const file of files) {
+    try {
+      const dataUrl = await readFileAsDataURL(file);
+      const resized = await downscaleImage(dataUrl, 2048);
+      const resp = await fetch("/api/roi/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: resized, name: file.name }),
+      });
+      const data = await resp.json();
+      if (data.ok) ok++; else fail++;
+    } catch (e) { fail++; }
+  }
+  hint.textContent = "上传完成：成功 " + ok + " 张，失败 " + fail + " 张";
+  loadRoiLibrary();
+};
+
+$("roiUploadBtn").onclick = () => $("roiFileInput").click();
+$("roiFileInput").onchange = async () => {
+  const file = $("roiFileInput").files[0];
+  if (!file) return;
+  try {
+    const dataUrl = await readFileAsDataURL(file);
+    roiQueryDataUrl = await downscaleImage(dataUrl, 2048);  // ROI 比对保留较高分辨率
+    const preview = $("roiPreview");
+    preview.src = roiQueryDataUrl;
+    preview.style.display = "block";
+    $("roiMatchBtn").disabled = false;
+  } catch (e) {
+    alert("图片读取失败：" + e.message);
+  }
+  $("roiFileInput").value = "";
+};
+
+async function streamLlmMatch(payload, onDelta) {
+  const resp = await fetch("/api/roi/llm-match", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok || !resp.body) throw new Error("HTTP " + resp.status);
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let full = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop();
+    for (const evt of events) {
+      const line = evt.trim();
+      if (!line.startsWith("data:")) continue;
+      const data = JSON.parse(line.slice(5).trim());
+      if (data.error) throw new Error(data.error);
+      if (data.delta) {
+        full += data.delta;
+        onDelta(full);
+      }
+    }
+  }
+  return full;
+}
+
+$("roiMatchBtn").onclick = async () => {
+  if (!roiQueryDataUrl) return;
+  const btn = $("roiMatchBtn");
+  const box = $("roiResults");
+  $("roiResultSection").style.display = "";
+  box.innerHTML = '<span class="thinking">模型比对中…（多图处理较慢，请稍候）</span>';
+  btn.disabled = true;
+  btn.textContent = "比对中…";
+  try {
+    const libResp = await fetch("/api/roi/library");
+    const libData = await libResp.json();
+    if (!libData.ok) throw new Error(libData.error || "ROI 库加载失败");
+    const full = await streamLlmMatch(
+      {
+        image: roiQueryDataUrl,
+        names: libData.names,
+        system_prompt: $("roiSystemPrompt").value,
+        prompt: $("roiUserPrompt").value,
+      },
+      (t) => { box.innerHTML = renderMarkdown(t); }
+    );
+    if (!full.trim()) box.innerHTML = '<span class="error">模型没有返回内容，请重试</span>';
+  } catch (e) {
+    box.innerHTML = '<span class="error">比对出错：' + escapeHtml(e.message) + "</span>";
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🔍 LLM 比对";
+  }
+};
+
+// 启动时恢复持久化状态
+restoreChatState();
+const savedTab = lsGet(LS_KEYS.tab, "chat");
+switchTab(savedTab);
+
+// 启动时检查后端
+fetch("/health").then((r) => r.json()).then((data) => {
+  statusText.textContent = data.ok ? "模型就绪" : "模型未加载";
+  if (!data.vision) statusText.textContent += "（无视觉）";
+}).catch(() => {
+  statusText.textContent = "后端不可用";
+  statusDot.style.background = "var(--danger)";
+});
+</script>
+</body>
+</html>
