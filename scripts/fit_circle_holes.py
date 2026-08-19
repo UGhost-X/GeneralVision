@@ -18,10 +18,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-
-DEFAULT_IMAGE = Path(
-    r"C:\Users\UGhost-X\Desktop\139c26a4\raw_image_1_ann1.png"
-)
+from image_preprocess import prepare_image
 
 
 @dataclass
@@ -94,15 +91,28 @@ class FittedCircle:
         }
 
 
+def read_image(path: Path, flags: int) -> np.ndarray | None:
+    try:
+        encoded = np.fromfile(str(path), dtype=np.uint8)
+    except OSError:
+        return None
+    if encoded.size == 0:
+        return None
+    return cv2.imdecode(encoded, flags)
+
+
 def load_gray(path: Path) -> np.ndarray:
-    image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    image = read_image(path, cv2.IMREAD_GRAYSCALE)
     if image is None:
         raise RuntimeError(f"Could not read image: {path}")
     return image
 
 
-def fit_circle(points: np.ndarray) -> tuple[float, float, float] | None:
-    """Fit a circle using the algebraic least-squares solution."""
+def fit_circle(
+    points: np.ndarray,
+    weights: np.ndarray | None = None,
+) -> tuple[float, float, float] | None:
+    """Fit a circle using weighted algebraic least squares."""
     if points.shape[0] < 6:
         return None
 
@@ -110,6 +120,14 @@ def fit_circle(points: np.ndarray) -> tuple[float, float, float] | None:
     y = points[:, 1].astype(np.float64)
     matrix = np.column_stack((2.0 * x, 2.0 * y, np.ones_like(x)))
     target = x * x + y * y
+
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float64)
+        if weights.shape[0] != points.shape[0]:
+            return None
+        root_weights = np.sqrt(np.clip(weights, 1e-6, None))
+        matrix = matrix * root_weights[:, None]
+        target = target * root_weights
 
     solution, _, _, _ = np.linalg.lstsq(matrix, target, rcond=None)
     center_x, center_y, constant = solution
@@ -120,10 +138,45 @@ def fit_circle(points: np.ndarray) -> tuple[float, float, float] | None:
     return center_x, center_y, float(np.sqrt(radius_sq))
 
 
+def robust_fit_circle(
+    points: np.ndarray,
+) -> tuple[tuple[float, float, float], np.ndarray] | None:
+    """Fit a circle while rejecting highlight and texture outliers."""
+    if points.shape[0] < 6:
+        return None
+
+    current = fit_circle(points)
+    if current is None:
+        return None
+
+    inliers = np.ones(points.shape[0], dtype=bool)
+    for _ in range(6):
+        center_x, center_y, radius = current
+        radial_error = np.abs(
+            np.hypot(points[:, 0] - center_x, points[:, 1] - center_y) - radius
+        )
+        median_error = float(np.median(radial_error))
+        deviation = float(np.median(np.abs(radial_error - median_error)))
+        scale = max(0.6, 1.4826 * deviation)
+        cutoff = max(1.5, min(0.20 * radius, 2.8 * scale + 0.5))
+        next_inliers = radial_error <= cutoff
+        if np.count_nonzero(next_inliers) < max(6, int(points.shape[0] * 0.3)):
+            break
+
+        weights = 1.0 / (1.0 + (radial_error / max(scale, 1e-6)) ** 2)
+        updated = fit_circle(points[next_inliers], weights[next_inliers])
+        if updated is None:
+            break
+        inliers = next_inliers
+        current = updated
+
+    return current, points[inliers]
+
+
 def fit_ellipse(
     points: np.ndarray, tolerance: float = 0.12
 ) -> tuple[float, float, float, float, float] | None:
-    """Fit an ellipse and return center, major radius, minor radius, angle."""
+    """Fit an ellipse with robust residual rejection."""
     if points.shape[0] < 5:
         return None
 
@@ -133,14 +186,18 @@ def fit_ellipse(
     except cv2.error:
         return None
 
-    for _ in range(3):
+    for _ in range(5):
         (center_x, center_y), (axis_a, axis_b), angle = ellipse
         major_radius = max(axis_a, axis_b) / 2.0
         minor_radius = min(axis_a, axis_b) / 2.0
         if major_radius <= 0 or minor_radius <= 0:
             return None
 
-        angle_rad = np.deg2rad(angle)
+        # cv2.fitEllipse returns the rotation of the first (minor) axis, but the
+        # returned major_radius/minor_radius refer to the major axis.  Rotate by the
+        # major-axis angle so the normalized error matches the returned geometry.
+        major_angle = (angle - 90.0) % 180.0
+        angle_rad = np.deg2rad(major_angle)
         cos_a = np.cos(angle_rad)
         sin_a = np.sin(angle_rad)
         dx = points[:, 0] - center_x
@@ -150,7 +207,14 @@ def fit_ellipse(
         normalized = np.hypot(
             x_rot / major_radius, y_rot / minor_radius
         )
-        inliers = np.abs(normalized - 1.0) <= tolerance
+        errors = np.abs(normalized - 1.0)
+        median_error = float(np.median(errors))
+        deviation = float(np.median(np.abs(errors - median_error)))
+        robust_cutoff = max(
+            0.05,
+            min(tolerance, 2.8 * max(0.01, 1.4826 * deviation) + 0.02),
+        )
+        inliers = errors <= robust_cutoff
         if np.count_nonzero(inliers) < 5:
             break
         if np.count_nonzero(inliers) == points.shape[0]:
@@ -210,11 +274,67 @@ def ellipse_support(
     return support, residual, int(np.count_nonzero(inlier_mask))
 
 
+def _ellipse_band_points(
+    edges: np.ndarray,
+    center_x: float,
+    center_y: float,
+    major_radius: float,
+    minor_radius: float,
+    angle: float,
+    low: float = 0.85,
+    high: float = 1.15,
+) -> np.ndarray:
+    """Collect edge pixels inside an elliptical band around a proposed ellipse.
+
+    The circular annulus used by :func:`refine_circle` only covers the radius
+    band around the *major* axis, so the minor-axis arcs of elongated ellipses
+    are dropped.  Re-sampling with an elliptical band keeps the full outline.
+    """
+    if (
+        edges is None
+        or edges.size == 0
+        or major_radius <= 0
+        or minor_radius <= 0
+    ):
+        return np.empty((0, 2), dtype=np.float64)
+
+    height, width = edges.shape
+    patch_margin = int(np.ceil(max(1.8 * major_radius, major_radius + 15.0))) + 2
+    x_min = max(0, int(center_x - patch_margin))
+    x_max = min(width, int(center_x + patch_margin) + 1)
+    y_min = max(0, int(center_y - patch_margin))
+    y_max = min(height, int(center_y + patch_margin) + 1)
+    if x_max <= x_min or y_max <= y_min:
+        return np.empty((0, 2), dtype=np.float64)
+
+    local_edges = edges[y_min:y_max, x_min:x_max]
+    local_xs = np.arange(x_min, x_max, dtype=np.float64)[None, :]
+    local_ys = np.arange(y_min, y_max, dtype=np.float64)[:, None]
+    dx = local_xs - center_x
+    dy = local_ys - center_y
+    angle_rad = np.deg2rad(angle)
+    cos_a = np.cos(angle_rad)
+    sin_a = np.sin(angle_rad)
+    x_rot = cos_a * dx + sin_a * dy
+    y_rot = -sin_a * dx + cos_a * dy
+    normalized = np.hypot(x_rot / major_radius, y_rot / minor_radius)
+    positions = np.argwhere(
+        (normalized >= low) & (normalized <= high) & (local_edges > 0)
+    )
+    return np.column_stack(
+        (
+            positions[:, 1].astype(np.float64) + x_min,
+            positions[:, 0].astype(np.float64) + y_min,
+        )
+    )
+
+
 def refine_circle(
     gray: np.ndarray,
     edges: np.ndarray,
     candidate: tuple[float, float, float],
     roundness_threshold: float,
+    gradient: np.ndarray | None = None,
 ) -> FittedCircle | None:
     center_x0, center_y0, radius0 = candidate
     height, width = gray.shape
@@ -228,6 +348,12 @@ def refine_circle(
 
     local_edges = edges[y_min:y_max, x_min:x_max]
     local_gray = gray[y_min:y_max, x_min:x_max]
+    local_gradient = (
+        gradient[y_min:y_max, x_min:x_max] if gradient is not None else None
+    )
+    # Sobel 分量用于“径向梯度方向过滤”，只保留梯度方向与径向一致的真实孔边界。
+    local_grad_x = cv2.Sobel(local_gray, cv2.CV_64F, 1, 0, ksize=3)
+    local_grad_y = cv2.Sobel(local_gray, cv2.CV_64F, 0, 1, ksize=3)
     local_xs = np.arange(x_min, x_max, dtype=np.float64)[None, :]
     local_ys = np.arange(y_min, y_max, dtype=np.float64)[:, None]
     distances = np.hypot(local_xs - center_x0, local_ys - center_y0)
@@ -237,7 +363,7 @@ def refine_circle(
         & (local_edges > 0)
     )
     positions = np.argwhere(annulus)
-    if positions.shape[0] < 30:
+    if positions.shape[0] < 20:
         return None
 
     # Edge pixels are returned as (row, column), but the circle fit uses (x, y).
@@ -247,25 +373,67 @@ def refine_circle(
             positions[:, 0].astype(np.float64) + y_min,
         )
     )
-    points = all_points.copy()
 
-    circle = fit_circle(points)
-    if circle is None:
+    # ---------- 径向梯度方向过滤 ----------
+    # 去掉倒角、阴影、反光、螺纹/纹理等非径向边缘，只保留梯度方向与径向
+    # 一致的孔边界点。
+    if all_points.shape[0] >= 20:
+        gx = local_grad_x[positions[:, 0], positions[:, 1]]
+        gy = local_grad_y[positions[:, 0], positions[:, 1]]
+
+        dx = all_points[:, 0] - center_x0
+        dy = all_points[:, 1] - center_y0
+
+        radial_norm = np.maximum(np.hypot(dx, dy), 1e-6)
+        grad_norm = np.maximum(np.hypot(gx, gy), 1e-6)
+
+        # 梯度方向与径向方向的夹角余弦，允许方向相反（孔内外明暗相反）
+        cos_dir = (gx * dx + gy * dy) / (radial_norm * grad_norm)
+        radial_mask = np.abs(cos_dir) > np.cos(np.deg2rad(25))
+
+        all_points = all_points[radial_mask]
+
+        if all_points.shape[0] < 20:
+            return None
+
+    # ---------- 半径直方图选主峰 ----------
+    # 环带内可能同时存在内圈/外圈（或倒角）等多条同心边缘，只保留像素最
+    # 多、最一致的那一圈，避免圆拟合被两圈平均。
+    if all_points.shape[0] >= 20:
+        norm_r = (
+            np.hypot(
+                all_points[:, 0] - center_x0,
+                all_points[:, 1] - center_y0,
+            )
+            / max(radius0, 1e-6)
+        )
+
+        counts, bin_edges = np.histogram(
+            norm_r, bins=40, range=(0.6, 1.4)
+        )
+        counts_smooth = np.convolve(counts, np.ones(3) / 3.0, mode="same")
+        peak_bin = int(np.argmax(counts_smooth))
+
+        low = bin_edges[max(0, peak_bin - 2)]
+        high = bin_edges[min(len(bin_edges) - 1, peak_bin + 3)]
+
+        keep = (norm_r >= low) & (norm_r <= high)
+        all_points = all_points[keep]
+
+        if all_points.shape[0] < 20:
+            return None
+
+    robust_circle = robust_fit_circle(all_points)
+    if robust_circle is None:
+        return None
+    (center_x, center_y, radius), points = robust_circle
+    if points.shape[0] < 20 or radius <= 0:
         return None
 
-    center_x, center_y, radius = circle
-    for _ in range(3):
-        radial_error = np.abs(
-            np.hypot(points[:, 0] - center_x, points[:, 1] - center_y) - radius
-        )
-        inliers = radial_error <= max(3.0, 0.15 * radius)
-        points = points[inliers]
-        if points.shape[0] < 30:
-            return None
-        circle = fit_circle(points)
-        if circle is None:
-            return None
-        center_x, center_y, radius = circle
+    distances = np.hypot(
+        local_xs - center_x,
+        local_ys - center_y,
+    )
 
     residual = float(
         np.mean(
@@ -284,22 +452,49 @@ def refine_circle(
         circle_bins[int(angle // 10.0) % 36] += 1
     circle_support = float(np.count_nonzero(circle_bins)) / 36.0
 
-    ellipse = fit_ellipse(all_points)
+    ellipse = fit_ellipse(points)
     if ellipse is None:
         return None
     center_x_e, center_y_e, major_radius, minor_radius, ellipse_angle = ellipse
-    roundness = minor_radius / major_radius if major_radius > 0 else 0.0
-    shape = "round" if roundness >= roundness_threshold else "elliptical"
-    ellipse_support_value, ellipse_residual, _ = ellipse_support(
-        all_points,
+    # The circular annulus above was sampled around a candidate whose radius is
+    # usually the *major* radius, so elongated ellipses lose their minor-axis
+    # arcs.  Re-sample the edge pixels inside an elliptical band and re-fit so
+    # the final ellipse uses the complete outline.
+    band_points = _ellipse_band_points(
+        edges,
         center_x_e,
         center_y_e,
         major_radius,
         minor_radius,
         ellipse_angle,
     )
-    inside_mask = distances < 0.6 * radius0
-    outside_mask = (distances >= 1.3 * radius0) & (distances <= 1.8 * radius0)
+    if band_points.shape[0] >= 20:
+        refined_ellipse = fit_ellipse(band_points)
+        if refined_ellipse is not None:
+            center_x_e, center_y_e, major_radius, minor_radius, ellipse_angle = (
+                refined_ellipse
+            )
+            band_points = _ellipse_band_points(
+                edges,
+                center_x_e,
+                center_y_e,
+                major_radius,
+                minor_radius,
+                ellipse_angle,
+            )
+    support_points = band_points if band_points.shape[0] >= 5 else points
+    roundness = minor_radius / major_radius if major_radius > 0 else 0.0
+    shape = "round" if roundness >= roundness_threshold else "elliptical"
+    ellipse_support_value, ellipse_residual, _ = ellipse_support(
+        support_points,
+        center_x_e,
+        center_y_e,
+        major_radius,
+        minor_radius,
+        ellipse_angle,
+    )
+    inside_mask = distances < 0.6 * radius
+    outside_mask = (distances >= 1.3 * radius) & (distances <= 1.8 * radius)
     inside = local_gray[inside_mask]
     outside = local_gray[outside_mask]
     contrast = (
@@ -314,10 +509,13 @@ def refine_circle(
         if np.count_nonzero(inside_mask)
         else 0.0
     )
-    grad_x = cv2.Sobel(local_gray, cv2.CV_64F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(local_gray, cv2.CV_64F, 0, 1, ksize=3)
-    grad_magnitude = np.hypot(grad_x, grad_y)
-    edge_ring = (distances >= 0.75 * radius0) & (distances <= 1.25 * radius0)
+    if local_gradient is None:
+        grad_x = cv2.Sobel(local_gray, cv2.CV_64F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(local_gray, cv2.CV_64F, 0, 1, ksize=3)
+        grad_magnitude = np.hypot(grad_x, grad_y)
+    else:
+        grad_magnitude = local_gradient.astype(np.float64)
+    edge_ring = (distances >= 0.75 * radius) & (distances <= 1.25 * radius)
     edge_sharpness = (
         float(grad_magnitude[edge_ring].mean())
         if np.count_nonzero(edge_ring)
@@ -335,7 +533,11 @@ def refine_circle(
         shape=shape,
         residual=residual,
         ellipse_residual=ellipse_residual,
-        support=circle_support,
+        support=(
+            ellipse_support_value
+            if shape == "elliptical"
+            else min(circle_support, ellipse_support_value)
+        ),
         contrast=contrast,
         inside_mean=inside_mean,
         outside_mean=outside_mean,
@@ -345,15 +547,65 @@ def refine_circle(
     )
 
 
+def _point_in_ellipse(
+    x: float,
+    y: float,
+    center_x: float,
+    center_y: float,
+    major_radius: float,
+    minor_radius: float,
+    angle: float,
+) -> bool:
+    if major_radius <= 0 or minor_radius <= 0:
+        return False
+    angle_rad = np.deg2rad(angle)
+    cos_a = np.cos(angle_rad)
+    sin_a = np.sin(angle_rad)
+    dx = x - center_x
+    dy = y - center_y
+    x_rot = cos_a * dx + sin_a * dy
+    y_rot = -sin_a * dx + cos_a * dy
+    return (x_rot / major_radius) ** 2 + (y_rot / minor_radius) ** 2 <= 1.0
+
+
 def non_max_suppression(
     circles: list[FittedCircle], min_distance: float
 ) -> list[FittedCircle]:
     kept: list[FittedCircle] = []
     for circle in sorted(circles, key=lambda item: item.score, reverse=True):
-        if all(
-            np.hypot(circle.x - existing.x, circle.y - existing.y) >= min_distance
-            for existing in kept
-        ):
+        keep = True
+        for existing in kept:
+            distance = float(
+                np.hypot(circle.x - existing.x, circle.y - existing.y)
+            )
+            # Ellipse candidates (e.g. two end-cap circles proposed by Hough for
+            # the same elongated ellipse) can refine to nearly the same shape.
+            # Merge them when their centers sit inside roughly 60% of the smaller
+            # minor axis, which means the two fitted outlines substantially overlap.
+            overlap_radius = max(
+                min_distance,
+                0.6 * min(circle.minor_radius, existing.minor_radius),
+            )
+            if distance < overlap_radius:
+                keep = False
+                break
+            # 小的片段椭圆（例如 Hough 在长椭圆端帽处拟合出的局部圆）中心会
+            # 落在已保留的大椭圆内部，视为同一椭圆的碎片，直接合并。
+            if (
+                circle.major_radius <= existing.major_radius
+                and _point_in_ellipse(
+                    circle.x,
+                    circle.y,
+                    existing.x,
+                    existing.y,
+                    existing.major_radius,
+                    existing.minor_radius,
+                    existing.ellipse_angle,
+                )
+            ):
+                keep = False
+                break
+        if keep:
             kept.append(circle)
     return kept
 
@@ -377,26 +629,35 @@ def detect_holes_from_image(
     reject_texture: bool,
     max_inside_edge_density: float,
 ) -> list[FittedCircle]:
-    blurred = cv2.medianBlur(gray, blur_size)
-    edges = cv2.Canny(blurred, canny_low, canny_high)
+    prepared = prepare_image(
+        gray,
+        blur_size=blur_size,
+        canny_low=canny_low,
+        canny_high=canny_high,
+    )
+    analysis_gray = prepared.fused
+    edges = prepared.edges
 
     candidates: list[tuple[float, float, float]] = []
 
-    circles = cv2.HoughCircles(
-        blurred,
-        cv2.HOUGH_GRADIENT,
-        dp=1.2,
-        minDist=max(30, min_radius * 2),
-        param1=80,
-        param2=hough_threshold,
-        minRadius=min_radius,
-        maxRadius=max_radius,
-    )
-    if circles is not None:
-        candidates.extend(
-            (float(x), float(y), float(r))
-            for x, y, r in np.round(circles[0]).astype(np.float64)
+    # Hough is only a proposal generator; final geometry comes from robust fitting.
+    for variant in (prepared.fused, prepared.clahe, prepared.gray):
+        hough_source = cv2.GaussianBlur(variant, (0, 0), sigmaX=1.0)
+        circles = cv2.HoughCircles(
+            hough_source,
+            cv2.HOUGH_GRADIENT,
+            dp=1.2,
+            minDist=max(30, int(min_radius * 1.7)),
+            param1=max(80, canny_high),
+            param2=max(8, int(hough_threshold)),
+            minRadius=min_radius,
+            maxRadius=max_radius,
         )
+        if circles is not None:
+            candidates.extend(
+                (float(x), float(y), float(r))
+                for x, y, r in np.round(circles[0]).astype(np.float64)
+            )
 
     if use_contours:
         closed_edges = cv2.morphologyEx(
@@ -407,7 +668,7 @@ def detect_holes_from_image(
         contours, _ = cv2.findContours(
             closed_edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE
         )
-        height, width = gray.shape
+        height, width = prepared.gray.shape
         for contour in contours:
             area = cv2.contourArea(contour)
             x, y, w, h = cv2.boundingRect(contour)
@@ -446,14 +707,20 @@ def detect_holes_from_image(
     fitted: list[FittedCircle] = []
     for candidate in candidates:
         result = refine_circle(
-            gray,
+            analysis_gray,
             edges,
             candidate,
             roundness_threshold,
+            gradient=prepared.gradient,
         )
         if result is None:
             continue
-        if result.support < min_support or result.residual > max_residual:
+        fit_residual = (
+            result.ellipse_residual
+            if result.shape == "elliptical"
+            else result.residual
+        )
+        if result.support < min_support or fit_residual > max_residual:
             continue
         if reject_highlight:
             bright_gap = result.inside_mean - result.outside_mean
@@ -537,7 +804,7 @@ def write_outputs(
         encoding="utf-8",
     )
 
-    color = cv2.imread(str(image_path))
+    color = read_image(image_path, cv2.IMREAD_COLOR)
     if color is not None:
         for circle in holes:
             center = (int(round(circle.x)), int(round(circle.y)))
@@ -568,8 +835,12 @@ def write_outputs(
                 )
             cv2.circle(color, center, 3, (0, 0, 255), -1, cv2.LINE_AA)
         overlay_path = output_dir / f"{prefix}_overlay.png"
-        cv2.imwrite(str(overlay_path), color)
-        print(f"Overlay saved: {overlay_path}")
+        ok, encoded = cv2.imencode(".png", color)
+        if ok:
+            encoded.tofile(str(overlay_path))
+            print(f"Overlay saved: {overlay_path}")
+        else:
+            print(f"Overlay encoding failed: {overlay_path}")
 
     print(f"CSV saved: {csv_path}")
     print(f"JSON saved: {json_path}")
@@ -583,7 +854,7 @@ def parse_args() -> argparse.Namespace:
         "image",
         nargs="?",
         type=Path,
-        help="Input image path (default: the provided raw_image_1_ann1.png).",
+        help="Input image path.",
     )
     parser.add_argument(
         "--image",
@@ -619,7 +890,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    image_path = (args.image_option or args.image or DEFAULT_IMAGE).expanduser()
+    image_value = args.image_option or args.image
+    if image_value is None:
+        raise SystemExit(
+            "No input image provided. Pass an image path as the first argument "
+            "or with --image."
+        )
+    image_path = Path(image_value).expanduser()
     holes = detect_holes(
         image_path=image_path,
         min_radius=args.min_radius,

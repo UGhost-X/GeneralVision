@@ -380,8 +380,9 @@
       <span class="hint">调整检测参数、标注真值、查看漏检/误检，并用批量搜索找更合适的参数。</span>
       <input id="fileInput" type="file" accept="image/*" hidden>
       <button class="button" id="uploadBtn">上传图片</button>
-      <button class="button secondary" id="sample1Btn">加载 raw_image_1_ann1</button>
-      <button class="button secondary" id="sample2Btn">加载 multi-demo-2</button>
+      <button class="button secondary" id="sample1Btn">加载 test-1（椭圆）</button>
+      <button class="button secondary" id="sample2Btn">加载 multi-demo-4</button>
+      <button class="button secondary" id="sample3Btn">加载 demo-2</button>
       <button class="button" id="exportJsonBtn">导出 JSON</button>
       <button class="button" id="exportCsvBtn">导出 CSV</button>
       <button class="button" id="saveParamsBtn">保存参数</button>
@@ -458,7 +459,7 @@
           <div class="field"><label>Canny 低阈值</label><input id="cannyLow" type="number" value="50" min="1"></div>
           <div class="field"><label>Canny 高阈值</label><input id="cannyHigh" type="number" value="150" min="1"></div>
           <div class="field"><label>匹配容差 px</label><input id="matchTolerance" type="number" value="20" min="1"></div>
-          <div class="field full check"><input id="useContours" type="checkbox"><label for="useContours">启用 Canny 轮廓候选（更慢，默认关闭）</label></div>
+          <div class="field full check"><input id="useContours" type="checkbox" checked><label for="useContours">启用 Canny 轮廓候选（默认开启，椭圆/长圆需要）</label></div>
           <div class="field full check"><input id="rejectHighlight" type="checkbox"><label for="rejectHighlight">过滤亮斑高光（默认关闭）</label></div>
           <div class="field"><label>高光亮度差阈值</label><input id="highlightThreshold" type="number" value="40" min="0"></div>
           <div class="field full check"><input id="useHighlightSharpness" type="checkbox"><label for="useHighlightSharpness">启用边缘锐度二次过滤（默认关闭）</label></div>
@@ -699,7 +700,7 @@
       blur_size: 5,
       canny_low: 50,
       canny_high: 150,
-      use_contours: false,
+      use_contours: true,
       reject_highlight: false,
       highlight_threshold: 40,
       use_highlight_sharpness: false,
@@ -1196,8 +1197,9 @@
       };
       reader.readAsDataURL(file);
     });
-    $("sample1Btn").addEventListener("click", () => loadSample("raw_image_1_ann1"));
-    $("sample2Btn").addEventListener("click", () => loadSample("multi-demo-2"));
+    $("sample1Btn").addEventListener("click", () => loadSample("test-1"));
+    $("sample2Btn").addEventListener("click", () => loadSample("multi-demo-4"));
+    $("sample3Btn").addEventListener("click", () => loadSample("demo-2"));
     $("toggleImgBtn").addEventListener("click", () => {
       state.showOverlay = !state.showOverlay;
       renderImage();

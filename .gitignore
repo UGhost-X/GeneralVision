@@ -25,3 +25,6 @@ docs/superpowers/
 
 # SDD 执行工作区（ledger/brief/report，gitignored 草稿）
 .superpowers/
+
+# 深度学习模型权重（由 scripts/download_models.py 下载）
+models/

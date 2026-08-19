@@ -9,6 +9,8 @@ from typing import Any
 import cv2
 import numpy as np
 
+from image_preprocess import prepare_image
+
 
 @dataclass
 class ShapeResult:
@@ -72,6 +74,239 @@ def _parallel_score(v1: np.ndarray, v2: np.ndarray) -> float:
     if norm1 == 0 or norm2 == 0:
         return 0.0
     return abs(float(np.dot(v1, v2)) / (norm1 * norm2))
+
+
+@dataclass
+class RobustLine:
+    origin: np.ndarray
+    direction: np.ndarray
+    points: np.ndarray
+    residual: float
+
+
+def _fit_robust_line(points: np.ndarray) -> RobustLine | None:
+    if points.shape[0] < 4:
+        return None
+
+    points = points.astype(np.float64)
+    inliers = np.ones(points.shape[0], dtype=bool)
+    direction = np.array([1.0, 0.0], dtype=np.float64)
+    origin = points.mean(axis=0)
+
+    for _ in range(8):
+        work = points[inliers]
+        if work.shape[0] < 4:
+            break
+        weights = np.ones(work.shape[0], dtype=np.float64)
+        if work.shape[0] > 4:
+            centered = work - work.mean(axis=0)
+            covariance = (centered * weights[:, None]).T @ centered
+            eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+            direction = eigenvectors[:, int(np.argmax(eigenvalues))]
+            direction /= max(float(np.linalg.norm(direction)), 1e-9)
+        origin = np.average(work, axis=0, weights=weights)
+        residuals = np.abs(
+            direction[0] * (points[:, 1] - origin[1])
+            - direction[1] * (points[:, 0] - origin[0])
+        )
+        median_residual = float(np.median(residuals))
+        deviation = float(
+            np.median(np.abs(residuals - median_residual))
+        )
+        scale = max(0.6, 1.4826 * deviation)
+        cutoff = max(1.5, 2.8 * scale + 0.5)
+        next_inliers = residuals <= cutoff
+        if np.count_nonzero(next_inliers) < 4:
+            break
+        if np.array_equal(next_inliers, inliers):
+            inliers = next_inliers
+            break
+        inliers = next_inliers
+
+    work = points[inliers]
+    if work.shape[0] < 4:
+        return None
+    origin = work.mean(axis=0)
+    centered = work - origin
+    covariance = centered.T @ centered
+    _, eigenvectors = np.linalg.eigh(covariance)
+    direction = eigenvectors[:, -1]
+    direction /= max(float(np.linalg.norm(direction)), 1e-9)
+    residuals = np.abs(
+        direction[0] * (work[:, 1] - origin[1])
+        - direction[1] * (work[:, 0] - origin[0])
+    )
+    return RobustLine(
+        origin=origin,
+        direction=direction,
+        points=work,
+        residual=float(np.median(residuals)),
+    )
+
+
+def _side_points(
+    points: np.ndarray,
+    start: np.ndarray,
+    end: np.ndarray,
+    center: np.ndarray,
+) -> np.ndarray:
+    side = end - start
+    length = float(np.linalg.norm(side))
+    if length <= 1e-6:
+        return np.empty((0, 2), dtype=np.float64)
+    direction = side / length
+    normal = np.array([-direction[1], direction[0]])
+    midpoint = (start + end) / 2.0
+    if float(np.dot(normal, midpoint - center)) < 0:
+        normal = -normal
+
+    relative = points - midpoint
+    distance = np.abs(relative @ normal)
+    projection = relative @ direction
+    band = max(3.0, min(14.0, 0.035 * length))
+    selected = (
+        (distance <= band)
+        & (projection >= -band)
+        & (projection <= length + band)
+    )
+    if np.count_nonzero(selected) >= 4:
+        return points[selected]
+
+    nearest = np.argsort(distance)
+    return points[nearest[: min(points.shape[0], 32)]]
+
+
+def _line_intersection(
+    normal_a: np.ndarray,
+    value_a: float,
+    normal_b: np.ndarray,
+    value_b: float,
+) -> np.ndarray | None:
+    matrix = np.vstack((normal_a, normal_b))
+    determinant = float(np.linalg.det(matrix))
+    if abs(determinant) < 1e-6:
+        return None
+    return np.linalg.solve(matrix, np.array([value_a, value_b]))
+
+
+def _fit_constrained_rectangle(
+    points: np.ndarray,
+    contour_area: float,
+) -> ShapeResult | None:
+    if points.shape[0] < 16:
+        return None
+
+    initial_box = cv2.minAreaRect(points.astype(np.float32))
+    box_points = cv2.boxPoints(initial_box).astype(np.float64)
+    center = box_points.mean(axis=0)
+    side_fits: list[RobustLine] = []
+    side_coverages: list[float] = []
+    for index in range(4):
+        start = box_points[index]
+        end = box_points[(index + 1) % 4]
+        selected = _side_points(points, start, end, center)
+        fitted = _fit_robust_line(selected)
+        if fitted is None:
+            return None
+        side_fits.append(fitted)
+        side_vector = end - start
+        side_length = float(np.linalg.norm(side_vector))
+        side_direction = side_vector / max(side_length, 1e-9)
+        projection = (fitted.points - start) @ side_direction
+        coverage = (
+            float(np.clip((projection.max() - projection.min()) / side_length, 0.0, 1.0))
+            if projection.size
+            else 0.0
+        )
+        side_coverages.append(coverage)
+
+    def aligned(first: np.ndarray, second: np.ndarray) -> np.ndarray:
+        return second if float(np.dot(first, second)) >= 0 else -second
+
+    direction_a = side_fits[0].direction + aligned(
+        side_fits[0].direction,
+        side_fits[2].direction,
+    )
+    direction_a /= max(float(np.linalg.norm(direction_a)), 1e-9)
+    direction_b = np.array([-direction_a[1], direction_a[0]])
+    raw_b = side_fits[1].direction + aligned(
+        side_fits[1].direction,
+        side_fits[3].direction,
+    )
+    if float(np.dot(direction_b, raw_b)) < 0:
+        direction_b = -direction_b
+
+    directions = [direction_a, direction_b, direction_a, direction_b]
+    normals: list[np.ndarray] = []
+    values: list[float] = []
+    residuals: list[float] = []
+    for index, fitted in enumerate(side_fits):
+        normal = np.array(
+            [-directions[index][1], directions[index][0]],
+            dtype=np.float64,
+        )
+        side_midpoint = (
+            box_points[index] + box_points[(index + 1) % 4]
+        ) / 2.0
+        if float(np.dot(normal, side_midpoint - center)) < 0:
+            normal = -normal
+        value = float(np.median(fitted.points @ normal))
+        normals.append(normal)
+        values.append(value)
+        residuals.append(float(np.median(np.abs(fitted.points @ normal - value))))
+
+    corners: list[np.ndarray] = []
+    for index in range(4):
+        corner = _line_intersection(
+            normals[index],
+            values[index],
+            normals[(index + 1) % 4],
+            values[(index + 1) % 4],
+        )
+        if corner is None:
+            return None
+        corners.append(corner)
+
+    polygon = np.asarray(corners, dtype=np.float64)
+    side_lengths = np.linalg.norm(
+        np.roll(polygon, -1, axis=0) - polygon,
+        axis=1,
+    )
+    if float(np.min(side_lengths)) < 5.0:
+        return None
+    polygon_area = abs(float(cv2.contourArea(polygon.astype(np.float32))))
+    if polygon_area <= 1.0:
+        return None
+
+    diagonal = float(np.linalg.norm(polygon[2] - polygon[0]))
+    line_score = max(
+        0.0,
+        1.0 - float(np.mean(residuals)) / max(2.0, 0.015 * diagonal),
+    )
+    coverage_score = float(
+        np.mean([min(1.0, coverage / 0.55) for coverage in side_coverages])
+    )
+    side_support = float(
+        np.mean([min(1.0, fit.points.shape[0] / 12.0) for fit in side_fits])
+    )
+    score = max(0.0, min(1.0, line_score * side_support * coverage_score))
+    width = float((side_lengths[0] + side_lengths[2]) / 2.0)
+    height = float((side_lengths[1] + side_lengths[3]) / 2.0)
+    angle = float(np.degrees(np.arctan2(direction_a[1], direction_a[0])))
+    fill_ratio = contour_area / polygon_area if polygon_area > 0 else 0.0
+    return ShapeResult(
+        shape="rectangle",
+        x=float(polygon[:, 0].mean()),
+        y=float(polygon[:, 1].mean()),
+        width=max(width, height),
+        height=min(width, height),
+        angle=angle,
+        area=polygon_area,
+        score=score,
+        vertices=4,
+        fill_ratio=fill_ratio,
+        points=polygon.tolist(),
+    )
 
 
 def _rectangle_from_points(points: np.ndarray) -> ShapeResult | None:
@@ -179,7 +414,8 @@ def _deduplicate(results: list[ShapeResult]) -> list[ShapeResult]:
     kept: list[ShapeResult] = []
     for result in sorted(results, key=lambda item: item.area, reverse=True):
         if all(
-            np.hypot(result.x - other.x, result.y - other.y) > 10
+            np.hypot(result.x - other.x, result.y - other.y)
+            > max(10.0, 0.15 * min(result.width, result.height))
             for other in kept
         ):
             kept.append(result)
@@ -202,8 +438,13 @@ def detect_shapes(
     if shape_type not in ("rectangle", "chamfered_rectangle", "trapezoid"):
         return []
 
-    blurred = cv2.medianBlur(gray, max(1, blur_size) | 1)
-    edges = cv2.Canny(blurred, canny_low, canny_high)
+    prepared = prepare_image(
+        gray,
+        blur_size=blur_size,
+        canny_low=canny_low,
+        canny_high=canny_high,
+    )
+    edges = prepared.edges
     closed = cv2.morphologyEx(
         edges, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8)
     )
@@ -222,6 +463,25 @@ def detect_shapes(
             continue
         if min(w, h) < min_side or max(w, h) > max_side:
             continue
+        contour_points = contour.reshape(-1, 2).astype(np.float64)
+        if shape_type == "rectangle":
+            result = _fit_constrained_rectangle(contour_points, area)
+            if result is None:
+                continue
+            result_points = np.asarray(result.points, dtype=np.float64)
+            if (
+                np.any(result_points[:, 0] < 0)
+                or np.any(result_points[:, 1] < 0)
+                or np.any(result_points[:, 0] >= width)
+                or np.any(result_points[:, 1] >= height)
+                or result.score < 0.25
+            ):
+                continue
+            if fill_mode == "filled" and result.fill_ratio < min_fill_ratio:
+                continue
+            results.append(result)
+            continue
+
         box = cv2.minAreaRect(contour)
         box_area = float(box[1][0] * box[1][1])
         fill_ratio = area / box_area if box_area > 0 else 0.0
