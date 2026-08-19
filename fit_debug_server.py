@@ -30,12 +30,12 @@ import shape_detector as shape_detection  # noqa: E402
 
 
 HTML_PATH = BASE_DIR / "fit_debug.html"
-SAMPLE_DIR = Path(r"C:\Users\UGhost-X\Desktop\139c26a4")
+SAMPLE_DIR = Path(r"C:\Users\Administrator\Desktop\新建文件夹\one2all")
 SAMPLES = {
-    "raw_image_1_ann1": SAMPLE_DIR / "raw_image_1_ann1.png",
-    "multi-demo-2": SAMPLE_DIR / "multi-demo-2.jpg",
-    "view_scene": Path(r"C:\Users\UGhost-X\Desktop\dll-demo\python_shape_web\view_scene.png"),
-    "view_template": Path(r"C:\Users\UGhost-X\Desktop\dll-demo\python_shape_web\view_template.png"),
+    "test-1": SAMPLE_DIR / "test-1.png",
+    "multi-demo-4": SAMPLE_DIR / "multi-demo-4-h-w.png",
+    "demo-2": SAMPLE_DIR / "demo-2.png",
+    "raw_image_1_ann1": SAMPLE_DIR / "raw_image_1_ann1-bak.png",
 }
 IMAGE_CACHE: dict[str, dict[str, Any]] = {}
 
@@ -58,7 +58,7 @@ def _read_sample(name: str) -> np.ndarray | None:
             path = candidate
     if path is None or not path.exists():
         return None
-    return cv2.imread(str(path), cv2.IMREAD_COLOR)
+    return fitting.read_image(path, cv2.IMREAD_COLOR)
 
 
 def _decode_image(data_url: str) -> np.ndarray | None:
@@ -138,7 +138,7 @@ def _params_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "blur_size": 5,
         "canny_low": 50,
         "canny_high": 150,
-        "use_contours": False,
+        "use_contours": True,
         "reject_highlight": False,
         "highlight_threshold": 40.0,
         "use_highlight_sharpness": False,
@@ -371,7 +371,7 @@ def _run_fit(
         holes = shape_detection.detect_shapes(
             gray=gray,
             shape_type=target_type,
-            blur_size=1,
+            blur_size=int(final_params["blur_size"]),
             canny_low=int(final_params["canny_low"]),
             canny_high=int(final_params["canny_high"]),
             min_area=float(final_params["min_area"]),
@@ -544,7 +544,7 @@ class FitDebugHandler(BaseHTTPRequestHandler):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Circle/ellipse fit debug app")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--port", type=int, default=8767)
     args = parser.parse_args()
     server = ThreadingHTTPServer((args.host, args.port), FitDebugHandler)
     server.daemon_threads = True

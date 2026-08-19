@@ -1,0 +1,1341 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>标注 + ROI 处理台</title>
+  <style>
+    :root {
+      --bg: #eef2f5;
+      --panel: #ffffff;
+      --line: #d5dde4;
+      --ink: #1d2733;
+      --muted: #5f6f7d;
+      --green: #16845a;
+      --red: #c33a3a;
+      --amber: #c47a09;
+      --blue: #2563eb;
+      --soft: #e9eef2;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      line-height: 1.4;
+    }
+    .app { width: min(1560px, 100%); margin: 0 auto; padding: 14px; display: grid; gap: 12px; }
+    .header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .header h1 { font-size: 18px; margin: 0 auto 0 0; letter-spacing: 0; }
+    .header .hint { color: var(--muted); font-size: 12px; max-width: 640px; }
+    .tabs { display: flex; gap: 8px; }
+    .tab {
+      border: 1px solid var(--line); background: var(--panel); color: var(--muted);
+      padding: 7px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;
+    }
+    .tab.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+    .view { display: grid; gap: 12px; }
+    .view[hidden] { display: none !important; }
+    .main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 12px; align-items: start; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+    .panel h2 { font-size: 13px; margin: 0 0 10px; font-weight: 700; }
+    .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .toolbar .spacer { flex: 1; }
+    .badge { background: var(--soft); border-radius: 999px; padding: 3px 10px; font-size: 12px; color: var(--muted); }
+    .button {
+      border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+      padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;
+    }
+    .button:hover { border-color: var(--blue); color: var(--blue); }
+    .button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+    .button.primary:hover { opacity: 0.9; color: #fff; }
+    .button.secondary { background: var(--soft); border-color: transparent; }
+    .button.warn { background: #fff7ed; border-color: #fed7aa; color: var(--amber); }
+    .button.danger { color: var(--red); }
+    .button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .canvas-wrap {
+      position: relative; border: 1px solid var(--line); background: #14181d;
+      border-radius: 8px; overflow: hidden; height: calc(100vh - 210px); min-height: 460px;
+    }
+    .canvas-wrap canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+    .canvas-wrap.panning canvas { cursor: grab; }
+    .canvas-hint {
+      position: absolute; left: 10px; bottom: 10px; background: rgba(0,0,0,.6); color: #dbeafe;
+      padding: 4px 10px; border-radius: 999px; font-size: 12px; pointer-events: none;
+    }
+    .empty-hint {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      color: #9aa7b3; font-size: 14px; pointer-events: none; text-align: center; padding: 20px;
+    }
+    .roi-list { display: grid; gap: 8px; max-height: calc(100vh - 300px); overflow: auto; }
+    .roi-item {
+      display: flex; gap: 8px; align-items: center; border: 1px solid var(--line);
+      border-radius: 8px; padding: 6px; background: #fbfcfd;
+    }
+    .roi-item .swatch { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 12px; }
+    .roi-item .thumb { width: 56px; height: 56px; object-fit: contain; border-radius: 5px; border: 1px solid var(--line); background: #fff; cursor: zoom-in; flex: 0 0 56px; }
+    .roi-item .info { flex: 1; font-size: 12px; line-height: 1.35; min-width: 0; }
+    .roi-item .info b { font-size: 12px; }
+    .roi-item .del { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 2px 6px; }
+    .roi-item .del:hover { color: var(--red); }
+    .console-main { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 12px; align-items: start; }
+    .select-roi { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .select-roi .button { padding: 4px 10px; font-size: 12px; }
+    .roi-check {
+      display: flex; gap: 8px; align-items: center; border: 1px solid var(--line);
+      border-radius: 8px; padding: 6px; cursor: pointer; background: #fbfcfd;
+    }
+    .roi-check input { accent-color: var(--blue); }
+    .roi-check img { width: 96px; height: 80px; object-fit: contain; border-radius: 5px; border: 1px solid var(--line); background: #fff; cursor: zoom-in; }
+    .roi-check .info { flex: 1; font-size: 12px; min-width: 0; }
+    .field { margin-bottom: 9px; }
+    .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+    .field input[type=number], .field select {
+      width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-size: 13px;
+      background: #fff; color: var(--ink);
+    }
+    .field.check { display: flex; align-items: center; gap: 6px; }
+    .field.check label { margin: 0; color: var(--ink); }
+    .field.check input { accent-color: var(--blue); }
+    .field[hidden] { display: none !important; }
+    .table-wrap { overflow: auto; max-height: calc(100vh - 320px); }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 8px; text-align: left; vertical-align: top; }
+    th { background: var(--soft); font-size: 12px; position: sticky; top: 0; }
+    td img { max-width: 180px; max-height: 150px; object-fit: contain; border: 1px solid var(--line); border-radius: 5px; background: #fff; display: block; cursor: zoom-in; }
+    .metrics { color: var(--muted); font-size: 11px; max-width: 240px; }
+    .error-text { color: var(--red); font-size: 12px; }
+    .psf-text { color: var(--amber); font-size: 11px; }
+    .dl-status { margin-top: 8px; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.5; }
+    .dl-status.warn { background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; }
+    .dl-status.ok { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
+    .persp-tip { font-size: 12px; color: var(--muted); line-height: 1.6; margin-bottom: 8px; }
+    .persp-tip code { background: var(--soft); padding: 1px 5px; border-radius: 4px; }
+    .persp-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+    .persp-row .field { min-width: 160px; margin-bottom: 6px; }
+    .persp-status { font-size: 12px; color: var(--muted); margin-top: 4px; min-height: 16px; }
+    .persp-status.ok { color: var(--green); }
+    .persp-status.warn { color: var(--amber); }
+    .row-actions { display: flex; flex-direction: column; gap: 4px; }
+    .row-actions .button { padding: 3px 8px; font-size: 12px; }
+    .spinner {
+      width: 16px; height: 16px; border: 2px solid var(--line); border-top-color: var(--blue);
+      border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; vertical-align: -3px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+.zoom-modal {
+      position: fixed; inset: 0; z-index: 2500; background: rgba(10,14,18,.92);
+      display: flex; flex-direction: column; color: #fff;
+    }
+    .zoom-modal[hidden] { display: none !important; }
+    .zoom-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,.14); flex-wrap: wrap; }
+    .zoom-title { font-size: 13px; font-weight: 600; margin-right: auto; }
+    .zoom-info { font-size: 12px; color: #b8c4cf; }
+    .zoom-toolbar .button { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.22); color: #fff; }
+    .zoom-toolbar .button:hover { background: rgba(255,255,255,.22); color: #fff; }
+    .zoom-toolbar .button.primary { background: var(--blue); border-color: var(--blue); }
+    .zoom-stage { flex: 1; overflow: hidden; position: relative; cursor: grab; }
+    .zoom-stage.dragging { cursor: grabbing; }
+    .zoom-stage img { position: absolute; top: 0; left: 0; max-width: none; max-height: none; background: #1b2026; box-shadow: 0 0 40px rgba(0,0,0,.5); }
+    .toast-container { position: fixed; top: 14px; right: 14px; z-index: 3000; display: grid; gap: 8px; }
+    .toast {
+      background: #1d2733; color: #fff; padding: 9px 14px; border-radius: 8px; font-size: 13px;
+      box-shadow: 0 4px 16px rgba(0,0,0,.25); max-width: 360px;
+    }
+    .toast.error { background: var(--red); }
+    .toast.success { background: var(--green); }
+    .help { font-size: 12px; color: var(--muted); line-height: 1.7; }
+    .help code { background: var(--soft); padding: 1px 5px; border-radius: 4px; }
+    details.panel summary { cursor: pointer; font-weight: 700; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="toast-container" id="toastContainer"></div>
+
+    <header class="header">
+      <h1>标注 + ROI 处理台</h1>
+      <span class="badge" id="imageInfo">未加载图片</span>
+      <span class="badge" id="roiCountInfo">ROI 0 个</span>
+      <span class="badge" id="algoInfo"></span>
+      <div class="tabs">
+        <button class="tab active" id="tabAnnotate">① 标注台</button>
+        <button class="tab" id="tabConsole">② ROI 处理台</button>
+      </div>
+    </header>
+
+    <!-- ============ 视图一：标注台 ============ -->
+    <section class="view" id="viewAnnotate">
+      <div class="main">
+        <div class="panel">
+          <div class="toolbar">
+            <input id="fileInput" type="file" accept="image/*" hidden>
+            <button class="button primary" id="uploadBtn">上传图片</button>
+            <button class="button" id="zoomInBtn">放大</button>
+            <button class="button" id="zoomOutBtn">缩小</button>
+            <button class="button" id="zoomFitBtn">适应窗口</button>
+            <span class="badge" id="zoomInfo">100%</span>
+            <button class="button" id="perspToggleBtn">透视矫正</button>
+            <span class="spacer"></span>
+            <button class="button danger" id="clearRoisBtn">清空标注</button>
+            <button class="button primary" id="extractBtn">提取 ROI 并进入处理台 →</button>
+          </div>
+          <div class="canvas-wrap" id="canvasWrap">
+            <canvas id="annoCanvas"></canvas>
+            <div class="empty-hint" id="emptyHint">
+              拖拽图片到此处，或点击「上传图片」<br>加载后：左键拖拽画矩形 ROI ｜ 滚轮缩放 ｜ 按住空格或右键拖拽平移
+            </div>
+            <div class="canvas-hint" id="canvasHint" hidden>左键画框 ｜ 滚轮缩放 ｜ 空格/右键平移</div>
+          </div>
+          <div class="panel" id="perspPanel" hidden>
+            <h2>透视矫正（把倾斜平面拉平，椭圆→正圆）</h2>
+            <div class="persp-tip">
+              ① 点击上方「透视矫正」按钮直接进入矫正模式；② 在图上依次点选 4 个角点（自动按 左上→右上→右下→左下 排序）；
+              ③ 可拖动角点微调；④ 选输出尺寸并点「执行矫正」。<br>
+              <b>输出尺寸怎么选：</b>基准（4 点）在实际物理世界是<b>正方形</b> → 选「自动正方形」；
+              是<b>长方形</b> → 在「自动」模式下填「物理长宽比」（如工件 100mm×60mm 填 1.67），或选「自定义宽 × 高」按同样比例填（如 1000×600）。
+              默认「自动」不填比例时按投影边长，只去透视、不额外变形。
+            </div>
+            <div class="toolbar">
+              <button class="button" id="perspModeBtn">进入矫正模式</button>
+              <button class="button" id="perspClearBtn" disabled>清除角点</button>
+              <button class="button primary" id="perspRunBtn" disabled>执行矫正</button>
+              <button class="button" id="perspUndoBtn" hidden>撤销矫正</button>
+            </div>
+            <div class="persp-row">
+              <div class="field" style="flex:1">
+                <label>输出尺寸</label>
+                <select id="perspSizeMode">
+                  <option value="auto">自动（按投影边长，只去透视不拉伸，推荐）</option>
+                  <option value="square">自动正方形（基准是正方形时，圆→正圆）</option>
+                  <option value="custom">自定义宽 × 高（矩形基准按实际长宽比填）</option>
+                </select>
+              </div>
+              <div class="field" style="flex:1" id="perspRatioField" hidden>
+                <label>物理长宽比 宽:高（选填；矩形基准填这个能精确还原圆）</label>
+                <input type="number" id="perspRatio" min="0.01" max="100" step="0.01" placeholder="例如 1.5">
+              </div>
+              <div class="field" style="flex:1" id="perspCustomField" hidden>
+                <label>宽 (px) × 高 (px)</label>
+                <div style="display:flex;gap:4px">
+                  <input type="number" id="perspW" min="8" max="12000" step="1" value="1000">
+                  <span style="line-height:30px">×</span>
+                  <input type="number" id="perspH" min="8" max="12000" step="1" value="1000">
+                </div>
+              </div>
+              <div class="field" style="flex:1">
+                <label>插值</label>
+                <select id="perspInterp">
+                  <option value="linear">双线性（默认）</option>
+                  <option value="cubic">双三次（更平滑）</option>
+                  <option value="area">区域（缩小用）</option>
+                </select>
+              </div>
+            </div>
+            <div class="persp-status" id="perspStatus"></div>
+          </div>
+        </div>
+        <aside class="panel">
+          <h2>标注列表（矩形 ROI）</h2>
+          <div class="roi-list" id="roiList"></div>
+          <div style="margin-top:10px;color:var(--muted);font-size:12px" id="roiListEmpty">尚未标注。在图上拖拽鼠标绘制矩形。</div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ============ 视图二：ROI 处理台 ============ -->
+    <section class="view" id="viewConsole" hidden>
+      <div class="console-main">
+        <aside class="panel">
+          <h2>选择 ROI</h2>
+          <div class="select-roi">
+            <button class="button" id="selectAllBtn">全选</button>
+            <button class="button" id="selectNoneBtn">全不选</button>
+            <span class="badge" id="selectedCount">已选 0</span>
+          </div>
+          <div class="roi-list" id="consoleRoiList"></div>
+          <div style="margin-top:10px" class="toolbar">
+            <button class="button secondary" id="backBtn">← 返回标注台</button>
+          </div>
+        </aside>
+        <div class="panel">
+          <h2>处理配置</h2>
+          <div class="field">
+            <label>处理算法</label>
+            <select id="algoSelect">
+              <option value="wiener">维纳滤波 (Wiener Filter)</option>
+              <option value="blind_deconv">盲解卷积 (Blind Deconvolution / RL)</option>
+              <option value="deriv1">一阶导数极值法</option>
+              <option value="deriv2">二阶导数极值法（LoG 零交叉）</option>
+              <option value="zernike">Zernike 矩边缘提取（亚像素）</option>
+              <option value="hat">HAT 超分清晰化（深度学习，4x）</option>
+              <option value="restormer">Restormer 去模糊/去噪（深度学习）</option>
+            </select>
+          </div>
+          <div id="paramsBox"></div>
+          <div id="dlStatus" class="dl-status" hidden></div>
+          <div class="toolbar" style="margin-top: 4px">
+            <button class="button primary" id="runBtn">运行处理</button>
+            <span id="runStatus"></span>
+            <span class="spacer"></span>
+            <button class="button" id="exportJsonBtn">导出结果 JSON</button>
+            <button class="button" id="exportAllBtn">导出全部处理后图片</button>
+          </div>
+          <div class="table-wrap" style="margin-top:10px">
+            <table id="resultTable">
+              <thead>
+                <tr>
+                  <th>ROI</th><th>原图</th><th>处理后</th><th>叠加图</th><th>指标</th><th>PSF 估计</th><th>导出</th>
+                </tr>
+              </thead>
+              <tbody id="resultBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <details class="panel help-panel" open>
+      <summary>算法说明（点击展开/收起）</summary>
+      <div class="help">
+        <p><b>维纳滤波 (Wiener Filter)</b>：FFT 域逆滤波，需指定 PSF 模型（高斯 σ 或运动长度+角度）与噪信比 NSR。<b>它假设图像确实被该 PSF 模糊过</b>；若原图本来就清晰或 PSF 不匹配，会产生振铃/伪影。出现伪影时：增大 NSR、降低恢复强度。</p>
+        <p><b>盲解卷积 (Blind Deconvolution)</b>：Richardson-Lucy 迭代去卷积；勾选「自动估计 PSF」时按启发式估计 σ 或运动参数（重模糊法 / 倒谱法），结果仅供参考。<b>同样假设图像被 PSF 模糊</b>；迭代越多越锐但越易振铃，建议配合「振铃抑制平滑」和「恢复强度」使用。</p>
+        <p><b>一阶导数极值法</b>：Sobel/Scharr/Prewitt 梯度幅值或方向分量，阈值化并可选非极大值抑制（沿梯度方向取极值）。「处理后」列默认显示灰度图+白色边缘，勾选「输出纯二值边缘图」可查看纯边缘图。</p>
+        <p><b>二阶导数极值法</b>：LoG 预平滑后拉普拉斯零交叉点，斜率阈值过滤弱边缘。「处理后」列默认显示灰度图+白色边缘。</p>
+        <p><b>Zernike 矩边缘提取</b>：Zernike 正交矩 (Z11/Z20) 亚像素定位，输出亚像素边缘点（叠加图绿点）；「处理后」列默认显示灰度图+白色边缘点。</p>
+        <p><b>HAT 超分清晰化</b>：HAT（Hybrid Attention Transformer）真实世界 4x 超分/恢复模型，可同时去模糊去噪并放大 4 倍。GAN 版更锐利但可能“脑补”纹理，MSE 版更保真。CPU 推理较慢，建议配合「放大查看」使用；结果若过锐可调大「与原图混合强度」。</p>
+        <p><b>Restormer 去模糊/去噪</b>：Restormer（CVPR2022）高分辨率图像恢复 Transformer，提供运动/散焦去模糊、真实去噪、高斯去噪权重，输出与原图同尺寸。对模型未见过的模糊类型效果有限，可配合「与原图混合」保留原始信息。</p>
+        <p style="color:var(--amber)"><b>调参建议</b>：去模糊类算法结果出现“面目全非/更模糊”时，按顺序尝试：① 增大 NSR（维纳）或减少迭代（RL）→ ② 降低恢复强度到 0.3~0.6 → ③ 增大振铃抑制平滑。若锐度仍下降，说明原图已清晰，建议改用边缘类算法提取特征。</p>
+      </div>
+    </details>
+  <div class="zoom-modal" id="zoomModal" hidden>
+    <div class="zoom-toolbar">
+      <span class="zoom-title" id="zoomTitle"></span>
+      <span class="zoom-info" id="zoomInfo2"></span>
+      <span style="margin-left:auto;display:flex;gap:8px">
+        <span class="button" id="zoomOutBtn2">缩小</span>
+        <span class="button" id="zoomInBtn2">放大</span>
+        <span class="button" id="zoomFitBtn2">适应</span>
+        <span class="button" id="zoomOneBtn">1:1</span>
+        <span class="button primary" id="zoomCloseBtn">关闭</span>
+      </span>
+    </div>
+    <div class="zoom-stage" id="zoomStage">
+      <img id="zoomImg" alt="放大查看">
+    </div>
+  </div>
+
+  <script>
+  "use strict";
+
+  // ---------------------------------------------------------------- state
+  const state = {
+    image: null,
+    imageId: null,
+    width: 0,
+    height: 0,
+    rois: [],
+    selected: new Set(),
+    algo: "wiener",
+    params: {},
+    processing: false,
+    panMode: false,
+    draw: null,
+    lastResults: null,
+    results: null,
+    persp: { active: false, points: [], dragIdx: -1 },
+    prevImage: null,
+  };
+
+  const ROI_COLORS = ["#2563eb", "#c33a3a", "#16845a", "#c47a09", "#7c3aed", "#0d9488", "#db2777", "#4b5563"];
+  let roiSeq = 0;
+
+  // ------------------------------------------------------------- helpers
+  const $ = (id) => document.getElementById(id);
+
+  function showToast(message, type = "info", duration = 3200) {
+    const el = document.createElement("div");
+    el.className = "toast" + (type === "error" ? " error" : type === "success" ? " success" : "");
+    el.textContent = message;
+    $("toastContainer").appendChild(el);
+    setTimeout(() => el.remove(), duration);
+  }
+
+  function downloadDataUrl(dataUrl, filename) {
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  // --------------------------------------------------------- param schema
+  const PARAM_SCHEMAS = {
+    wiener: [
+      { key: "psf_model", label: "PSF 模型", type: "select",
+        options: [["gaussian", "高斯模糊"], ["motion", "运动模糊"]], def: "gaussian" },
+      { key: "sigma", label: "高斯 σ (px)", type: "number", min: 0.1, max: 8, step: 0.1, def: 1.5, show: "psf_model=gaussian" },
+      { key: "length", label: "运动长度 (px)", type: "number", min: 2, max: 60, step: 1, def: 9, show: "psf_model=motion" },
+      { key: "angle", label: "运动角度 (°)", type: "number", min: -180, max: 180, step: 1, def: 0, show: "psf_model=motion" },
+      { key: "nsr", label: "噪信比 NSR（越大越抑制伪影）", type: "number", min: 0.001, max: 1, step: 0.001, def: 0.05 },
+      { key: "strength", label: "恢复强度（0~1，越小越接近原图）", type: "number", min: 0.05, max: 1, step: 0.05, def: 0.8 },
+    ],
+    blind_deconv: [
+      { key: "psf_model", label: "PSF 模型", type: "select",
+        options: [["gaussian", "高斯模糊"], ["motion", "运动模糊"]], def: "gaussian" },
+      { key: "sigma", label: "高斯 σ (px)", type: "number", min: 0.1, max: 8, step: 0.1, def: 1.5, show: "psf_model=gaussian" },
+      { key: "length", label: "运动长度 (px)", type: "number", min: 2, max: 60, step: 1, def: 9, show: "psf_model=motion" },
+      { key: "angle", label: "运动角度 (°)", type: "number", min: -180, max: 180, step: 1, def: 0, show: "psf_model=motion" },
+      { key: "iterations", label: "迭代次数（越多越锐但越易振铃）", type: "number", min: 1, max: 200, step: 1, def: 8 },
+      { key: "post_smooth", label: "振铃抑制平滑 σ (0=关)", type: "number", min: 0, max: 5, step: 0.1, def: 1.5 },
+      { key: "strength", label: "恢复强度（0~1，越小越接近原图）", type: "number", min: 0.05, max: 1, step: 0.05, def: 0.5 },
+      { key: "estimate_psf", label: "自动估计 PSF（勾选后忽略上方 PSF 参数）", type: "check", def: false },
+    ],
+    deriv1: [
+      { key: "operator", label: "算子", type: "select",
+        options: [["sobel", "Sobel"], ["scharr", "Scharr"], ["prewitt", "Prewitt"]], def: "sobel" },
+      { key: "direction", label: "方向", type: "select",
+        options: [["mag", "梯度幅值"], ["x", "x 方向"], ["y", "y 方向"]], def: "mag" },
+      { key: "sigma", label: "预平滑 σ (0=不平滑)", type: "number", min: 0, max: 5, step: 0.1, def: 0 },
+      { key: "threshold", label: "梯度阈值", type: "number", min: 1, max: 255, step: 1, def: 40 },
+      { key: "nms", label: "非极大值抑制（仅幅值方向）", type: "check", def: true },
+      { key: "binary_output", label: "输出纯二值边缘图（默认：灰度图+白色边缘）", type: "check", def: false },
+    ],
+    deriv2: [
+      { key: "sigma", label: "LoG 预平滑 σ", type: "number", min: 0, max: 5, step: 0.1, def: 1.0 },
+      { key: "slope_threshold", label: "零交叉斜率阈值", type: "number", min: 0, max: 200, step: 1, def: 8 },
+      { key: "binary_output", label: "输出纯二值边缘图（默认：灰度图+白色边缘）", type: "check", def: false },
+    ],
+    zernike: [
+      { key: "mask", label: "模板大小", type: "select", options: [["5", "5×5"], ["7", "7×7"]], def: "5" },
+      { key: "threshold", label: "梯度阈值（候选点）", type: "number", min: 1, max: 255, step: 1, def: 40 },
+      { key: "edge_width", label: "边缘半宽 (px)", type: "number", min: 0, max: 2, step: 0.05, def: 0.5 },
+      { key: "subpixel", label: "亚像素定位", type: "check", def: true },
+      { key: "binary_output", label: "输出纯二值边缘图（默认：灰度图+白色边缘）", type: "check", def: false },
+    ],
+    hat: [
+      { key: "weight", label: "模型权重", type: "select",
+        options: [["real_hat_gan_sharper", "Real-HAT GAN（更锐利，真实世界）"], ["hat_srx4_imagenet", "HAT-SR x4（更保真、伪影少）"]], def: "real_hat_gan_sharper" },
+      { key: "output_scale", label: "输出尺寸", type: "select",
+        options: [["4x", "4x 超分放大（推荐看细节）"], ["1x", "恢复后缩回原尺寸（便于对比）"]], def: "4x" },
+      { key: "blend", label: "与原图混合强度（0=纯模型输出）", type: "number", min: 0, max: 1, step: 0.05, def: 0 },
+      { key: "tile_size", label: "推理分块 (px，越小越省内存/越慢)", type: "number", min: 64, max: 512, step: 32, def: 128 },
+    ],
+    restormer: [
+      { key: "task", label: "任务/权重", type: "select",
+        options: [["motion_deblurring", "去运动模糊 (GoPro)"], ["single_image_defocus_deblurring", "去散焦模糊"], ["real_denoising", "真实图像去噪"], ["gaussian_gray_denoising_sigma25", "高斯灰度去噪 σ25"]], def: "motion_deblurring" },
+      { key: "blend", label: "与原图混合强度（0=纯模型输出）", type: "number", min: 0, max: 1, step: 0.05, def: 0 },
+      { key: "tile_size", label: "推理分块 (px)", type: "number", min: 64, max: 512, step: 32, def: 256 },
+    ],
+  };
+  // ------------------------------------------------------- view switching
+  function showView(name) {
+    $("viewAnnotate").hidden = name !== "annotate";
+    $("viewConsole").hidden = name !== "console";
+    $("tabAnnotate").classList.toggle("active", name === "annotate");
+    $("tabConsole").classList.toggle("active", name === "console");
+    if (name === "console") renderConsoleRois();
+    if (name === "annotate") requestAnimationFrame(fitToCanvas);
+  }
+
+  // ----------------------------------------------------------- canvas
+  const canvas = $("annoCanvas");
+  const ctx = canvas.getContext("2d");
+  const view = { scale: 1, panX: 0, panY: 0 };
+
+  function resizeCanvas() {
+    const wrap = $("canvasWrap");
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = wrap.clientWidth * dpr;
+    canvas.height = wrap.clientHeight * dpr;
+    canvas.style.width = wrap.clientWidth + "px";
+    canvas.style.height = wrap.clientHeight + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function fitToCanvas() {
+    if (!state.image) return;
+    const cw = canvas.clientWidth, ch = canvas.clientHeight;
+    if (!cw || !ch) return;
+    view.scale = Math.min(cw / state.width, ch / state.height, 1);
+    view.panX = (cw - state.width * view.scale) / 2;
+    view.panY = (ch - state.height * view.scale) / 2;
+    renderCanvas();
+  }
+
+  function imageToCanvas(ix, iy) {
+    return [ix * view.scale + view.panX, iy * view.scale + view.panY];
+  }
+  function canvasToImage(cx, cy) {
+    return [(cx - view.panX) / view.scale, (cy - view.panY) / view.scale];
+  }
+
+  function zoomAt(clientX, clientY, factor) {
+    const rect = canvas.getBoundingClientRect();
+    const mx = clientX - rect.left, my = clientY - rect.top;
+    const newScale = Math.min(32, Math.max(0.02, view.scale * factor));
+    view.panX = mx - (mx - view.panX) * (newScale / view.scale);
+    view.panY = my - (my - view.panY) * (newScale / view.scale);
+    view.scale = newScale;
+    renderCanvas();
+  }
+
+  function renderCanvas() {
+    const cw = canvas.clientWidth, ch = canvas.clientHeight;
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.fillStyle = "#14181d";
+    ctx.fillRect(0, 0, cw, ch);
+    if (!state.image) return;
+    ctx.drawImage(state.image, view.panX, view.panY, state.width * view.scale, state.height * view.scale);
+    for (const roi of state.rois) {
+      const [x1, y1] = imageToCanvas(roi.x, roi.y);
+      const [x2, y2] = imageToCanvas(roi.x + roi.w, roi.y + roi.h);
+      ctx.fillStyle = hexToRgba(roi.color, 0.18);
+      ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+      ctx.strokeStyle = roi.color;
+      ctx.lineWidth = 2 / Math.max(view.scale, 0.1);
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+      ctx.fillStyle = roi.color;
+      ctx.font = "bold 12px 'Segoe UI', sans-serif";
+      ctx.fillText(roi.id, x1 + 3, y1 - 5);
+    }
+    if (state.draw) {
+      const [x1, y1] = imageToCanvas(Math.min(state.draw.sx, state.draw.cx), Math.min(state.draw.sy, state.draw.cy));
+      const [x2, y2] = imageToCanvas(Math.max(state.draw.sx, state.draw.cx), Math.max(state.draw.sy, state.draw.cy));
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = "#ffd166";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+      ctx.setLineDash([]);
+    }
+    if (state.persp.active && state.persp.points.length) {
+      const cpts = state.persp.points.map(([ix, iy]) => imageToCanvas(ix, iy));
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(cpts[0][0], cpts[0][1]);
+      for (let i = 1; i < cpts.length; i++) ctx.lineTo(cpts[i][0], cpts[i][1]);
+      if (cpts.length === 4) ctx.closePath();
+      ctx.fillStyle = "rgba(37,99,235,0.18)";
+      if (cpts.length === 4) ctx.fill();
+      ctx.strokeStyle = "#60a5fa";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      cpts.forEach(([x, y], i) => {
+        ctx.beginPath();
+        ctx.arc(x, y, 7, 0, Math.PI * 2);
+        ctx.fillStyle = i === state.persp.dragIdx ? "#ffd166" : "#2563eb";
+        ctx.fill();
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = "#fff";
+        ctx.font = "bold 10px 'Segoe UI', sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(i + 1), x, y + 0.5);
+      });
+      ctx.restore();
+    }
+    $("zoomInfo").textContent = Math.round(view.scale * 100) + "%";
+  }
+
+  function hexToRgba(hex, alpha) {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+  }
+
+  // ----------------------------------------------------- perspective correction
+  function perspOrderPoints(pts) {
+    // 按绕中心的角度排序，得到 左上→右上→右下→左下
+    const cx = pts.reduce((s, q) => s + q[0], 0) / 4;
+    const cy = pts.reduce((s, q) => s + q[1], 0) / 4;
+    return pts
+      .map((q) => ({ q, a: Math.atan2(q[1] - cy, q[0] - cx) }))
+      .sort((x, y) => x.a - y.a)
+      .map((o) => o.q);
+  }
+
+  function perspHitTest(cx, cy) {
+    for (let i = 0; i < state.persp.points.length; i++) {
+      const [x, y] = imageToCanvas(state.persp.points[i][0], state.persp.points[i][1]);
+      if (Math.hypot(x - cx, y - cy) <= 14) return i;
+    }
+    return -1;
+  }
+
+  function perspUpdateStatus() {
+    const n = state.persp.points.length;
+    const el = $("perspStatus");
+    $("perspClearBtn").disabled = n === 0;
+    $("perspRunBtn").disabled = n !== 4;
+    if (n === 0) {
+      el.textContent = "尚未选点：点击图像添加第 1 个角点（选铆钉所在平面上能构成矩形/正方形的 4 个点，例如工件直角边或 Mark 点）。";
+      el.className = "persp-status";
+    } else if (n < 4) {
+      el.textContent = `已选 ${n}/4 个角点，继续点击添加（会自动按 左上→右上→右下→左下 排序）。`;
+      el.className = "persp-status";
+    } else {
+      const pts = state.persp.points;
+      const d = (a, b) => Math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1]);
+      const w = Math.round(Math.max(d(0, 1), d(2, 3)));
+      const h = Math.round(Math.max(d(1, 2), d(3, 0)));
+      const side = Math.round(Math.max(w, h));
+      const mode = $("perspSizeMode").value;
+      if (mode === "square") {
+        el.textContent = `4 点已就绪：将输出约 ${side}×${side} px 正方形（基准需为物理正方形，圆→正圆）。`;
+      } else if (mode === "custom") {
+        el.textContent = `4 点已就绪：将按自定义宽高输出（按实际物理长宽比填写，如 1000×600）。`;
+      } else {
+        const ratio = parseFloat($("perspRatio").value);
+        const txt = ratio > 0 ? `将按长宽比 ${ratio} 输出约 ${w}×${Math.round(w / ratio)} px（可精确还原正圆）`
+                              : `将输出约 ${w}×${h} px（按投影边长）。如需精确还原正圆：正方形基准选「自动正方形」，矩形基准填「物理长宽比」或用「自定义」。`;
+        el.textContent = `4 点已就绪：${txt}`;
+      }
+      el.className = "persp-status ok";
+    }
+  }
+
+  function perspSetMode(on) {
+    state.persp.active = on;
+    $("perspToggleBtn").textContent = on ? "透视矫正：开" : "透视矫正";
+    $("perspModeBtn").textContent = on ? "退出矫正模式" : "进入矫正模式";
+    $("perspModeBtn").classList.toggle("primary", on);
+    $("canvasHint").textContent = on
+      ? "矫正模式：点击依次添加 1→4 角点 ｜ 拖动角点微调 ｜ 滚轮缩放 ｜ 空格/右键平移"
+      : "左键画框 ｜ 滚轮缩放 ｜ 空格/右键平移";
+    if (!on) state.persp.dragIdx = -1;
+    renderCanvas();
+  }
+
+  function perspReset() {
+    state.persp.points = [];
+    state.persp.dragIdx = -1;
+    perspUpdateStatus();
+    renderCanvas();
+  }
+
+  async function runPerspective() {
+    if (!state.image || !state.imageId) return;
+    if (state.persp.points.length !== 4) { showToast("请先选 4 个角点", "error"); return; }
+    const mode = $("perspSizeMode").value;
+    const output = { mode, interpolation: $("perspInterp").value };
+    if (mode === "auto") {
+      const ratio = parseFloat($("perspRatio").value);
+      if (ratio > 0) output.ratio = ratio;
+    }
+    if (mode === "custom") {
+      output.width = Math.max(8, parseInt($("perspW").value, 10) || 0);
+      output.height = Math.max(8, parseInt($("perspH").value, 10) || 0);
+      if (output.width < 8 || output.height < 8) { showToast("自定义宽高需 ≥ 8px", "error"); return; }
+    }
+    $("perspRunBtn").disabled = true;
+    $("perspRunBtn").textContent = "矫正中…";
+    try {
+      const resp = await postJson("/api/perspective", {
+        image_id: state.imageId,
+        points: state.persp.points,
+        output,
+      });
+      if (resp.error) throw new Error(resp.error);
+      state.prevImage = { image: state.image, imageId: state.imageId, width: state.width, height: state.height };
+      const img = new Image();
+      img.onload = () => {
+        state.image = img;
+        state.imageId = resp.image_id;
+        state.width = resp.width;
+        state.height = resp.height;
+        state.rois = [];
+        state.selected.clear();
+        state.results = null;
+        state.persp.points = [];
+        state.persp.dragIdx = -1;
+        perspSetMode(false);
+        $("perspUndoBtn").hidden = false;
+        $("imageInfo").textContent = `已加载 ${state.width}×${state.height} · 透视矫正后`;
+        resizeCanvas();
+        fitToCanvas();
+        renderRoiList();
+        updateCounts();
+        perspUpdateStatus();
+        showToast(`透视矫正完成：${resp.width}×${resp.height}，已切换为新底图（可撤销）`, "success");
+      };
+      img.src = "/api/image?image_id=" + resp.image_id;
+    } catch (err) {
+      showToast("矫正失败: " + err.message, "error");
+    } finally {
+      $("perspRunBtn").disabled = state.persp.points.length !== 4;
+      $("perspRunBtn").textContent = "执行矫正";
+    }
+  }
+
+  function perspUndo() {
+    if (!state.prevImage) return;
+    const pv = state.prevImage;
+    state.image = pv.image;
+    state.imageId = pv.imageId;
+    state.width = pv.width;
+    state.height = pv.height;
+    state.rois = [];
+    state.selected.clear();
+    state.results = null;
+    state.prevImage = null;
+    $("perspUndoBtn").hidden = true;
+    $("imageInfo").textContent = `已加载 ${state.width}×${state.height} · 已撤销矫正`;
+    resizeCanvas();
+    fitToCanvas();
+    renderRoiList();
+    updateCounts();
+    showToast("已撤销透视矫正，恢复原图", "success");
+  }
+
+  // mouse / keyboard
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.12 : 1 / 1.12);
+  }, { passive: false });
+
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  let panning = false, panStart = null;
+  function isPanMode(e) { return state.panMode || e.button === 2 || e.button === 1; }
+
+  canvas.addEventListener("mousedown", (e) => {
+    if (!state.image) return;
+    const rect = canvas.getBoundingClientRect();
+    if (isPanMode(e)) {
+      panning = true;
+      panStart = { x: e.clientX - rect.left, y: e.clientY - rect.top, px: view.panX, py: view.panY };
+      $("canvasWrap").classList.add("panning");
+      return;
+    }
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    if (state.persp.active) {
+      const hit = perspHitTest(cx, cy);
+      if (hit >= 0) { state.persp.dragIdx = hit; return; }
+      if (state.persp.points.length >= 4) {
+        showToast("已选满 4 个角点，可拖动微调或点「清除角点」", "info");
+        return;
+      }
+      const [ix, iy] = canvasToImage(cx, cy);
+      state.persp.points.push([Math.min(state.width - 1, Math.max(0, ix)), Math.min(state.height - 1, Math.max(0, iy))]);
+      if (state.persp.points.length === 4) state.persp.points = perspOrderPoints(state.persp.points);
+      perspUpdateStatus();
+      renderCanvas();
+      return;
+    }
+    const [ix, iy] = canvasToImage(cx, cy);
+    state.draw = { sx: ix, sy: iy, cx: ix, cy: iy };
+  });
+
+  canvas.addEventListener("mousemove", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    if (panning && panStart) {
+      view.panX = panStart.px + (e.clientX - rect.left - panStart.x);
+      view.panY = panStart.py + (e.clientY - rect.top - panStart.y);
+      renderCanvas();
+      return;
+    }
+    if (state.persp.active && state.persp.dragIdx >= 0) {
+      const [ix, iy] = canvasToImage(e.clientX - rect.left, e.clientY - rect.top);
+      const p = state.persp.points[state.persp.dragIdx];
+      p[0] = Math.min(state.width - 1, Math.max(0, ix));
+      p[1] = Math.min(state.height - 1, Math.max(0, iy));
+      if (state.persp.points.length === 4) state.persp.points = perspOrderPoints(state.persp.points);
+      perspUpdateStatus();
+      renderCanvas();
+      return;
+    }
+    if (state.draw) {
+      const [ix, iy] = canvasToImage(e.clientX - rect.left, e.clientY - rect.top);
+      state.draw.cx = ix; state.draw.cy = iy;
+      renderCanvas();
+    }
+  });
+
+  window.addEventListener("mouseup", (e) => {
+    if (panning) {
+      panning = false;
+      $("canvasWrap").classList.remove("panning");
+      return;
+    }
+    if (state.persp.dragIdx >= 0) {
+      state.persp.dragIdx = -1;
+      return;
+    }
+    if (state.draw) {
+      const d = state.draw;
+      state.draw = null;
+      const w = Math.abs(d.cx - d.sx), h = Math.abs(d.cy - d.sy);
+      if (w >= 3 && h >= 3) {
+        addRoi(Math.min(d.sx, d.cx), Math.min(d.sy, d.cy), w, h);
+      }
+      renderCanvas();
+    }
+  });
+
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Space" && !isTypingTarget(e.target)) {
+      e.preventDefault();
+      state.panMode = true;
+      $("canvasWrap").classList.add("panning");
+    }
+    if (e.key === "Escape") {
+      if (state.persp.active && state.persp.points.length) {
+        state.persp.points.pop();
+        perspUpdateStatus();
+        renderCanvas();
+        return;
+      }
+      state.draw = null; renderCanvas();
+    }
+  });
+  window.addEventListener("keyup", (e) => {
+    if (e.code === "Space") {
+      state.panMode = false;
+      $("canvasWrap").classList.remove("panning");
+    }
+  });
+  function isTypingTarget(el) {
+    return el && (el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA");
+  }
+
+  // -------------------------------------------------------------- upload
+  $("uploadBtn").addEventListener("click", () => $("fileInput").click());
+  $("fileInput").addEventListener("change", (e) => {
+    if (e.target.files && e.target.files[0]) loadFile(e.target.files[0]);
+    e.target.value = "";
+  });
+  const wrap = $("canvasWrap");
+  wrap.addEventListener("dragover", (e) => { e.preventDefault(); });
+  wrap.addEventListener("drop", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+  });
+
+  function loadFile(file) {
+    if (!file.type.startsWith("image/")) {
+      showToast("请选择图片文件", "error");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = reader.result;
+      try {
+        const resp = await postJson("/api/upload", { image: dataUrl });
+        if (resp.error) throw new Error(resp.error);
+        const img = new Image();
+        img.onload = () => {
+          state.image = img;
+          state.imageId = resp.image_id;
+          state.width = resp.width;
+          state.height = resp.height;
+          state.rois = [];
+          state.selected.clear();
+          state.results = null;
+          $("emptyHint").hidden = true;
+          $("canvasHint").hidden = false;
+          state.persp.points = [];
+          state.persp.dragIdx = -1;
+          state.prevImage = null;
+          perspSetMode(false);
+          $("perspUndoBtn").hidden = true;
+          $("perspPanel").hidden = true;
+          $("perspToggleBtn").classList.remove("primary");
+          $("perspToggleBtn").textContent = "透视矫正";
+          resizeCanvas();
+          fitToCanvas();
+          renderRoiList();
+          $("imageInfo").textContent = `已加载 ${state.width}×${state.height} · ${file.name}`;
+          updateCounts();
+          showToast("图片加载成功", "success");
+        };
+        img.src = dataUrl;
+      } catch (err) {
+        showToast("上传失败: " + err.message, "error");
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function postJson(url, body) {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return resp.json();
+  }
+
+  // ------------------------------------------------- perspective listeners
+  $("perspToggleBtn").addEventListener("click", () => {
+    if (!state.image) { showToast("请先上传图片", "error"); return; }
+    const panel = $("perspPanel");
+    const willOpen = panel.hidden;
+    panel.hidden = !willOpen;
+    $("perspToggleBtn").classList.toggle("primary", willOpen);
+    if (willOpen) {
+      perspSetMode(true);           // 一键进入矫正模式
+      perspUpdateStatus();
+      panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } else {
+      perspSetMode(false);
+    }
+  });
+  $("perspModeBtn").addEventListener("click", () => {
+    if (!state.image) { showToast("请先上传图片", "error"); return; }
+    perspSetMode(!state.persp.active);
+    if (state.persp.active) perspUpdateStatus();
+  });
+  $("perspClearBtn").addEventListener("click", perspReset);
+  $("perspRunBtn").addEventListener("click", runPerspective);
+  $("perspUndoBtn").addEventListener("click", perspUndo);
+  function updatePerspFields() {
+    const mode = $("perspSizeMode").value;
+    $("perspCustomField").hidden = mode !== "custom";
+    $("perspRatioField").hidden = mode !== "auto";
+  }
+  $("perspSizeMode").addEventListener("change", () => {
+    updatePerspFields();
+    perspUpdateStatus();
+  });
+  updatePerspFields();  // 初始化（默认 auto → 显示物理长宽比）
+
+  // ---------------------------------------------------------------- ROIs
+  function addRoi(x, y, w, h) {
+    roiSeq += 1;
+    const id = "ROI-" + String(roiSeq).padStart(2, "0");
+    const roi = {
+      id,
+      x: Math.round(x * 10) / 10,
+      y: Math.round(y * 10) / 10,
+      w: Math.round(w * 10) / 10,
+      h: Math.round(h * 10) / 10,
+      color: ROI_COLORS[(roiSeq - 1) % ROI_COLORS.length],
+    };
+    state.rois.push(roi);
+    state.selected.add(id);
+    renderRoiList();
+    updateCounts();
+  }
+
+  function deleteRoi(id) {
+    state.rois = state.rois.filter((r) => r.id !== id);
+    state.selected.delete(id);
+    renderRoiList();
+    updateCounts();
+  }
+
+  function clearRois() {
+    state.rois = [];
+    state.selected.clear();
+    renderRoiList();
+    updateCounts();
+    renderCanvas();
+  }
+
+  function updateCounts() {
+    $("roiCountInfo").textContent = `ROI ${state.rois.length} 个`;
+    $("selectedCount").textContent = `已选 ${state.selected.size}`;
+    $("extractBtn").disabled = state.rois.length === 0 || !state.image;
+  }
+
+  function roiThumb(roi, maxSize = 140) {
+    if (!state.image) return "";
+    const tw = Math.max(1, Math.round(roi.w)), th = Math.max(1, Math.round(roi.h));
+    const s = Math.min(1, maxSize / Math.max(tw, th));
+    const cw = Math.max(1, Math.round(tw * s)), ch = Math.max(1, Math.round(th * s));
+    const c = document.createElement("canvas");
+    c.width = cw; c.height = ch;
+    const g = c.getContext("2d");
+    g.drawImage(state.image, roi.x, roi.y, tw, th, 0, 0, cw, ch);
+    return c.toDataURL("image/png");
+  }
+
+  function renderRoiList() {
+    const box = $("roiList");
+    box.innerHTML = "";
+    $("roiListEmpty").style.display = state.rois.length ? "none" : "";
+    for (const roi of state.rois) {
+      const item = document.createElement("div");
+      item.className = "roi-item";
+      item.innerHTML = `
+        <span class="swatch" style="background:${roi.color}"></span>
+        <img class="thumb" src="${roiThumb(roi, 96)}" alt="预览" title="点击放大查看">
+        <span class="info"><b>${roi.id}</b><br>${fmtRoi(roi)}</span>
+        <button class="del" title="删除">✕</button>`;
+      item.querySelector(".del").addEventListener("click", () => deleteRoi(roi.id));
+      item.querySelector(".thumb").addEventListener("click", () => openZoom(roiThumb(roi, 2048), `${roi.id} · ${fmtRoi(roi)}`));
+      box.appendChild(item);
+    }
+  }
+
+  function fmtRoi(roi) {
+    return `${Math.round(roi.w)}×${Math.round(roi.h)} px @ (${Math.round(roi.x)}, ${Math.round(roi.y)})`;
+  }
+
+  $("clearRoisBtn").addEventListener("click", () => {
+    if (state.rois.length) { clearRois(); showToast("已清空标注", "success"); }
+  });
+  $("zoomInBtn").addEventListener("click", () => zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, 1.25));
+  $("zoomOutBtn").addEventListener("click", () => zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, 0.8));
+  $("zoomFitBtn").addEventListener("click", fitToCanvas);
+  $("extractBtn").addEventListener("click", () => { renderConsoleRois(); showView("console"); });
+  $("backBtn").addEventListener("click", () => showView("annotate"));
+  $("tabAnnotate").addEventListener("click", () => showView("annotate"));
+  $("tabConsole").addEventListener("click", () => showView("console"));
+  // ------------------------------------------------------ console: ROIs
+  function renderConsoleRois() {
+    const box = $("consoleRoiList");
+    box.innerHTML = "";
+    if (!state.rois.length) {
+      box.innerHTML = '<div style="color:var(--muted);font-size:12px">暂无 ROI，请先返回标注台绘制。</div>';
+      return;
+    }
+    for (const roi of state.rois) {
+      const label = document.createElement("label");
+      label.className = "roi-check";
+      label.innerHTML = `
+        <input type="checkbox" data-id="${roi.id}" ${state.selected.has(roi.id) ? "checked" : ""}>
+        <img src="${roiThumb(roi, 160)}" alt="预览" title="点击放大查看">
+        <span class="info"><b>${roi.id}</b><br>${fmtRoi(roi)}</span>`;
+      const cb = label.querySelector("input");
+      cb.addEventListener("change", () => {
+        if (cb.checked) state.selected.add(roi.id); else state.selected.delete(roi.id);
+        updateCounts();
+      });
+      label.querySelector("img").addEventListener("click", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        openZoom(roiThumb(roi, 2048), `${roi.id} · ${fmtRoi(roi)}`);
+      });
+      box.appendChild(label);
+    }
+    updateCounts();
+  }
+
+  $("selectAllBtn").addEventListener("click", () => {
+    state.rois.forEach((r) => state.selected.add(r.id));
+    renderConsoleRois();
+  });
+  $("selectNoneBtn").addEventListener("click", () => {
+    state.selected.clear();
+    renderConsoleRois();
+  });
+
+  // --------------------------------------------------- console: params
+  function renderParams() {
+    const box = $("paramsBox");
+    const schema = PARAM_SCHEMAS[state.algo] || [];
+    box.innerHTML = "";
+    for (const spec of schema) {
+      let v = state.params[spec.key];
+      if (v === undefined) v = spec.def;
+      const div = document.createElement("div");
+      div.className = "field" + (spec.type === "check" ? " check" : "");
+      if (spec.type === "select") {
+        div.innerHTML = `<label>${spec.label}</label><select data-key="${spec.key}">` +
+          spec.options.map(([val, text]) => `<option value="${val}" ${String(v) === val ? "selected" : ""}>${text}</option>`).join("") + `</select>`;
+      } else if (spec.type === "check") {
+        div.innerHTML = `<input type="checkbox" data-key="${spec.key}" ${v ? "checked" : ""}><label>${spec.label}</label>`;
+      } else {
+        div.innerHTML = `<label>${spec.label}</label><input type="number" data-key="${spec.key}" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${v}">`;
+      }
+      box.appendChild(div);
+    }
+    applyFieldVisibility(state.params);
+    box.querySelectorAll("input,select").forEach((el) => {
+      el.addEventListener("change", () => {
+        const key = el.dataset.key;
+        const spec = schema.find((s) => s.key === key);
+        if (spec.type === "check") state.params[key] = el.checked;
+        else if (spec.type === "number") state.params[key] = parseFloat(el.value);
+        else state.params[key] = el.value;
+        applyFieldVisibility(state.params);
+      });
+    });
+    $("algoInfo").textContent = "算法: " + $("algoSelect").selectedOptions[0].textContent;
+  }
+
+  function applyFieldVisibility(values) {
+    const schema = PARAM_SCHEMAS[state.algo] || [];
+    $("paramsBox").querySelectorAll(".field").forEach((field, i) => {
+      const spec = schema[i];
+      if (!spec || !spec.show) { field.hidden = false; return; }
+      const [key, val] = spec.show.split("=");
+      field.hidden = String(values[key]) !== val;
+    });
+  }
+
+  async function refreshDlStatus() {
+    const el = $("dlStatus");
+    try {
+      const resp = await fetch("/api/dl_status").then((r) => r.json());
+      if (!resp.ok) { el.hidden = true; return; }
+      const s = resp.status;
+      const missing = [];
+      if (!s.torch) missing.push("PyTorch 未安装");
+      for (const [k, v] of Object.entries(s.hat || {})) if (!v.ready) missing.push("HAT/" + k);
+      for (const [k, v] of Object.entries(s.restormer || {})) if (!v.ready) missing.push("Restormer/" + k);
+      if (missing.length) {
+        el.hidden = false;
+        el.className = "dl-status warn";
+        el.innerHTML = `<b>深度学习模型未就绪</b>：${missing.join("、")}。<br>请运行 <code>scripts/download_models.py</code> 下载模型，并按提示安装 torch（CPU 版即可）。`;
+      } else {
+        el.hidden = false;
+        el.className = "dl-status ok";
+        el.innerHTML = `深度学习模型就绪：HAT ×2 + Restormer ×4，torch ${s.torch_version || ""}${s.cuda ? " · GPU " + s.device : " · CPU"}`;
+      }
+    } catch (e) {
+      el.hidden = true;
+    }
+  }
+
+  $("algoSelect").addEventListener("change", () => {
+    state.algo = $("algoSelect").value;
+    state.params = {};
+    state.results = null;
+    renderParams();
+  refreshDlStatus();
+    renderResults();
+  });
+
+  // ------------------------------------------------------------ running
+  async function runProcessing() {
+    if (!state.image || !state.imageId) { showToast("请先上传图片", "error"); return; }
+    const rois = state.rois.filter((r) => state.selected.has(r.id));
+    if (!rois.length) { showToast("请至少选择一个 ROI", "error"); return; }
+    if (state.processing) return;
+    state.processing = true;
+    $("runBtn").disabled = true;
+    $("runStatus").innerHTML = '<span class="spinner"></span> 处理中…';
+    try {
+      const resp = await postJson("/api/process", {
+        image_id: state.imageId,
+        rois: rois.map(({ id, x, y, w, h }) => ({ id, x, y, w, h })),
+        algorithm: state.algo,
+        params: state.params,
+      });
+      if (resp.error) throw new Error(resp.error);
+      state.results = resp.results;
+      state.lastResults = resp;
+      renderResults();
+      const ok = resp.results.filter((r) => !r.error).length;
+      showToast(`处理完成：${ok}/${resp.results.length} 个 ROI 成功，耗时 ${resp.elapsed_ms}ms`, "success");
+      const bad = resp.results.filter((r) => !r.error && r.metrics && r.metrics.degraded && !r.metrics.model); // DL 模型由用户自行判断
+      const artifacts = resp.results.filter((r) => !r.error && r.metrics && (r.metrics.clip_added || 0) > 0.05);
+      if (artifacts.length) {
+        showToast(`提示：${artifacts.length} 个 ROI 出现明显伪影（新增饱和>5%）。建议增大 NSR、降低恢复强度、减少迭代或增大振铃抑制平滑。`, "error", 6000);
+      } else if (bad.length) {
+        showToast(`提示：${bad.length} 个 ROI 锐度下降（图像可能本来就很清晰，无需去模糊）。可调小恢复强度或换用边缘类算法。`, "error", 6000);
+      }
+    } catch (err) {
+      showToast("处理失败: " + err.message, "error");
+    } finally {
+      state.processing = false;
+      $("runBtn").disabled = false;
+      $("runStatus").textContent = "";
+    }
+  }
+  $("runBtn").addEventListener("click", runProcessing);
+
+  function metricText(m) {
+    if (!m) return "-";
+    const parts = [];
+    if ("sharpness_before" in m && "degraded" in m) {
+      parts.push(m.degraded ? "⚠ 锐度下降" : `锐度 ${m.sharpness_before} → ${m.sharpness_after}`);
+      if (m.clip_added != null && m.clip_added > 0.05) parts.push(`新增饱和 ${Math.round(m.clip_added * 100)}%`);
+    } else if ("sharpness_before" in m) {
+      parts.push(`锐度 ${m.sharpness_before} → ${m.sharpness_after}`);
+    }
+    if ("model" in m) parts.push(`${m.model}${m.scale ? " " + m.scale + "x" : ""}${m.task ? " · " + m.task : ""}`);
+    if ("elapsed_ms" in m) parts.push(`耗时 ${Math.round(m.elapsed_ms)}ms`);
+    if ("edge_count" in m) parts.push(`边缘点 ${m.edge_count}`);
+    if ("point_count" in m) parts.push(`亚像素点 ${m.point_count}`);
+    if ("mean_gradient" in m) parts.push(`平均梯度 ${m.mean_gradient}`);
+    if ("iterations_run" in m) parts.push(`迭代 ${m.iterations_run}${m.converged ? "（收敛）" : ""}`);
+    if ("psf" in m) parts.push(`PSF ${m.psf === "gaussian" ? "高斯" : "运动"}`);
+    if (m.psf_sigma != null) parts.push(`σ=${m.psf_sigma}`);
+    if (m.psf_length != null) parts.push(`L=${m.psf_length} θ=${m.psf_angle}°`);
+    return parts.join(" · ");
+  }
+
+  function psfText(p) {
+    if (!p) return "-";
+    let s = p.method === "cepstrum" ? "倒谱法" : "重模糊法";
+    if (p.sigma !== undefined) s += `：σ=${p.sigma}`;
+    if (p.length !== undefined) s += `：L=${p.length} θ=${p.angle}°`;
+    if (p.fallback) s += "（估计失败，使用默认值）";
+    return s;
+  }
+
+  function renderResults() {
+    const body = $("resultBody");
+    body.innerHTML = "";
+    if (!state.results) {
+      body.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">尚无结果。选择 ROI 与算法后点击「运行处理」。</td></tr>';
+      return;
+    }
+    for (const r of state.results) {
+      const tr = document.createElement("tr");
+      if (r.error) {
+        tr.innerHTML = `<td><b>${r.roi_id}</b></td><td colspan="6" class="error-text">${r.error}</td>`;
+        body.appendChild(tr);
+        continue;
+      }
+      const name = `${r.roi_id}_${state.algo}`;
+      tr.innerHTML = `
+        <td><b>${r.roi_id}</b><br><span style="color:var(--muted)">${Math.round(r.w)}×${Math.round(r.h)}</span></td>
+        <td><img src="${r.original}" alt="原图"></td>
+        <td><img src="${r.processed}" alt="处理后"></td>
+        <td><img src="${r.overlay}" alt="叠加图"></td>
+        <td class="metrics">${metricText(r.metrics)}</td>
+        <td class="psf-text">${psfText(r.psf_estimated)}</td>
+        <td><div class="row-actions">
+          <button class="button" data-dl="${r.processed}" data-name="${name}_processed.png">处理后</button>
+          <button class="button" data-dl="${r.overlay}" data-name="${name}_overlay.png">叠加图</button>
+        </div></td>`;
+      tr.querySelectorAll("button[data-dl]").forEach((btn) => {
+        btn.addEventListener("click", () => downloadDataUrl(btn.dataset.dl, btn.dataset.name));
+      });
+      tr.querySelectorAll("td img").forEach((img) => {
+        img.addEventListener("click", () => openZoom(img.src, `${r.roi_id} · ${img.alt}`));
+      });
+      body.appendChild(tr);
+    }
+  }
+
+  $("exportJsonBtn").addEventListener("click", () => {
+    if (!state.lastResults) { showToast("暂无结果可导出", "error"); return; }
+    const payload = {
+      image_id: state.imageId,
+      algorithm: state.algo,
+      params: state.params,
+      elapsed_ms: state.lastResults.elapsed_ms,
+      results: state.results.map((r) => ({
+        roi_id: r.roi_id, x: r.x, y: r.y, w: r.w, h: r.h,
+        metrics: r.metrics || null, psf_estimated: r.psf_estimated || null, error: r.error || null,
+      })),
+    };
+    downloadDataUrl("data:application/json;charset=utf-8," + encodeURIComponent(JSON.stringify(payload, null, 2)),
+      `roi_results_${state.algo}.json`);
+  });
+
+  $("exportAllBtn").addEventListener("click", () => {
+    if (!state.results) { showToast("暂无结果可导出", "error"); return; }
+    let count = 0;
+    for (const r of state.results) {
+      if (r.error) continue;
+      downloadDataUrl(r.processed, `${r.roi_id}_${state.algo}_processed.png`);
+      count += 1;
+    }
+    showToast(`已导出 ${count} 张处理后图片`, "success");
+  });
+
+  // ------------------------------------------------------------ zoom view
+  const zoomModal = $("zoomModal");
+  const zoomImg = $("zoomImg");
+  const zoomStage = $("zoomStage");
+  const zoomView = { scale: 1, panX: 0, panY: 0, baseW: 0, baseH: 0 };
+  let zoomDrag = null;
+
+  function openZoom(src, title) {
+    zoomImg.src = src;
+    $("zoomTitle").textContent = title || "";
+    zoomModal.hidden = false;
+    zoomView.scale = 1;
+    zoomView.panX = 0;
+    zoomView.panY = 0;
+    applyZoom();
+    zoomImg.onload = () => {
+      zoomView.baseW = zoomImg.naturalWidth;
+      zoomView.baseH = zoomImg.naturalHeight;
+      zoomFit();
+    };
+    if (zoomImg.complete && zoomImg.naturalWidth > 0) {
+      zoomView.baseW = zoomImg.naturalWidth;
+      zoomView.baseH = zoomImg.naturalHeight;
+      zoomFit();
+    }
+    document.body.style.overflow = "hidden";
+  }
+  function closeZoom() {
+    zoomModal.hidden = true;
+    document.body.style.overflow = "";
+  }
+  function applyZoom() {
+    zoomImg.style.transform = `translate(${zoomView.panX}px, ${zoomView.panY}px) scale(${zoomView.scale})`;
+    zoomImg.style.transformOrigin = "0 0";
+    $("zoomInfo2").textContent = `${Math.round(zoomView.scale * 100)}%`;
+  }
+  function zoomFit() {
+    const rect = zoomStage.getBoundingClientRect();
+    const pad = 30;
+    const scale = Math.min(
+      (rect.width - pad) / Math.max(zoomView.baseW, 1),
+      (rect.height - pad) / Math.max(zoomView.baseH, 1),
+      1
+    );
+    zoomView.scale = Math.max(scale, 0.02);
+    zoomView.panX = (rect.width - zoomView.baseW * zoomView.scale) / 2;
+    zoomView.panY = (rect.height - zoomView.baseH * zoomView.scale) / 2;
+    applyZoom();
+  }
+  function zoomOne() {
+    zoomView.scale = 1;
+    zoomView.panX = 0;
+    zoomView.panY = 0;
+    applyZoom();
+  }
+  function zoomBy(factor, clientX, clientY) {
+    const rect = zoomStage.getBoundingClientRect();
+    const mx = clientX - rect.left, my = clientY - rect.top;
+    const newScale = Math.min(64, Math.max(0.02, zoomView.scale * factor));
+    zoomView.panX = mx - (mx - zoomView.panX) * (newScale / zoomView.scale);
+    zoomView.panY = my - (my - zoomView.panY) * (newScale / zoomView.scale);
+    zoomView.scale = newScale;
+    applyZoom();
+  }
+  $("zoomInBtn2").addEventListener("click", () => zoomBy(1.25, zoomStage.clientWidth / 2, zoomStage.clientHeight / 2));
+  $("zoomOutBtn2").addEventListener("click", () => zoomBy(0.8, zoomStage.clientWidth / 2, zoomStage.clientHeight / 2));
+  $("zoomFitBtn2").addEventListener("click", zoomFit);
+  $("zoomOneBtn").addEventListener("click", zoomOne);
+  $("zoomCloseBtn").addEventListener("click", closeZoom);
+  zoomStage.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    zoomBy(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX, e.clientY);
+  }, { passive: false });
+  zoomStage.addEventListener("mousedown", (e) => {
+    if (e.button === 0) {
+      zoomDrag = { x: e.clientX, y: e.clientY, px: zoomView.panX, py: zoomView.panY };
+      zoomStage.classList.add("dragging");
+      e.preventDefault();
+    }
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (zoomDrag) {
+      zoomView.panX = zoomDrag.px + (e.clientX - zoomDrag.x);
+      zoomView.panY = zoomDrag.py + (e.clientY - zoomDrag.y);
+      applyZoom();
+    }
+  });
+  window.addEventListener("mouseup", () => {
+    zoomDrag = null;
+    zoomStage.classList.remove("dragging");
+  });
+  window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeZoom(); });
+
+  // ---------------------------------------------------------------- init
+  window.addEventListener("resize", () => {
+    resizeCanvas();
+    renderCanvas();
+  });
+  renderParams();
+  updateCounts();
+  showView("annotate");
+  </script>
+</body>
+</html>
+

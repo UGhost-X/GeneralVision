@@ -34,3 +34,6 @@ llm_chat_server.out.log
 llm_chat_server.err.log
 llm_chat_server.pid
 test_vision.png
+
+# 深度学习模型权重（由 scripts/download_models.py 下载）
+models/

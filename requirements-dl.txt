@@ -1,0 +1,4 @@
+# Deep-learning enhancement (HAT / Restormer) optional deps
+# install: uv pip install --python .venv\Scripts\python.exe -r requirements-dl.txt --index-url https://download.pytorch.org/whl/cpu
+torch
+einops
